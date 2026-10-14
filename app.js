@@ -545,8 +545,6 @@ async function pagRiepilogo() {
     h('div', { class: 'grid2 acts' },
       btn('Movimenti', 'list', 'sec', () => { location.hash = '#movimenti'; }),
       btn('Prelievo', 'cash', '', () => tendinaPrelievo())),
-    h('div', { class: 'sec-t' }, h('h2', { text: 'Saldo reale' })),
-    h('div', { class: 'grid2' }, kpi('Saldo', r.cassa, 'big')),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Entrate previste' })),
     h('div', { class: 'kpi' }, h('div', { class: 'l', text: r.entrateN + (r.entrateN === 1 ? ' scheda' : ' schede') }), h('div', { class: 'v', text: fmtEur(r.entratePreviste) })),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Uscite previste' })),
