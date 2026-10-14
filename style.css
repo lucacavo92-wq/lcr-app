@@ -97,6 +97,22 @@ label.f > span { display: block; margin-bottom: 5px; font-size: .85rem; font-wei
 .empty { padding: 18px; text-align: center; color: var(--mut); }
 .skel { min-height: 70vh; display: flex; align-items: center; justify-content: center; color: var(--mut); }
 
+/* riepilogo: tasti e movimenti */
+.acts { margin-top: 10px; }
+.kpib { text-align: left; color: var(--txt); cursor: pointer; font: inherit; width: 100%; }
+.kpib:active { background: var(--s2); }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.kpi.sm { padding: 10px; min-height: 70px; }
+.kpi.sm .v { font-size: 1rem; }
+.pos { color: var(--acc); }
+.out { color: var(--err); }
+.item.static { cursor: default; }
+.item.static:active { background: var(--s1); }
+.item.ann { opacity: .55; }
+.item.ann .t, .item.ann .r { text-decoration: line-through; }
+.b-mut { color: var(--mut); }
+.gap { height: 14px; }
+
 /* filtri */
 .bar { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
 .bar .src { grid-column: 1 / -1; position: relative; }
