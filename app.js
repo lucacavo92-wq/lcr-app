@@ -54,6 +54,7 @@ const ICONS = {
   x: 'M6 6l12 12M18 6L6 18',
   undo: 'M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3',
   list: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01',
+  note: 'M6 3h9l4 4v14H6zM9 12h7M9 16h7',
   cash: 'M3 7h18v10H3zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM6 12h.01M18 12h.01'
 };
 function ic(name) {
@@ -182,20 +183,26 @@ function realApi() {
   }
 
   return {
+    // Home: solo schede aperte e lavori da fare (nessun importo)
+    async home() {
+      const [aperte, lavori] = await Promise.all([
+        sb.from('lcr_schede').select('id,codice,cliente_testo,moto_testo,prezzo_finale,stato,pagamento').neq('stato', 'Completato').order('id', { ascending: false }),
+        sb.from('lcr_lavori_da_fare').select('*').order('fatto', { ascending: true }).order('id', { ascending: false })
+      ]);
+      return { schedeAperte: ok(aperte), lavori: ok(lavori) };
+    },
+    // Contabilita': tutto il blocco soldi
     async riepilogo() {
-      const [v, daInc, aperte, lavori, guad] = await Promise.all([
+      const [v, daInc, guad] = await Promise.all([
         sb.from('lcr_v_riepilogo').select('*').single(),
         sb.from('lcr_schede').select('prezzo_finale').neq('pagamento', 'Incassato'),
-        sb.from('lcr_schede').select('id,codice,cliente_testo,moto_testo,prezzo_finale').neq('stato', 'Completato').order('id', { ascending: false }),
-        sb.from('lcr_lavori_da_fare').select('*').order('fatto', { ascending: true }).order('id', { ascending: false }),
         guadagnoMese()
       ]);
       const r = ok(v), di = ok(daInc);
       return {
         cassa: Number(r.cassa_teorica), daIncassare: Number(r.da_incassare), daPagare: Number(r.da_pagare_fornitori),
         magazzino: Number(r.valore_magazzino), guadagnoMese: guad, prelievi: Number(r.prelievi) || 0,
-        entratePreviste: round2(di.reduce((t, s) => t + Number(s.prezzo_finale), 0)), entrateN: di.length,
-        schedeAperte: ok(aperte), lavori: ok(lavori)
+        entratePreviste: round2(di.reduce((t, s) => t + Number(s.prezzo_finale), 0)), entrateN: di.length
       };
     },
     async schede() {
@@ -246,7 +253,9 @@ function realApi() {
     },
     async prelievo(importo, nota, data) { ok(await sb.rpc('lcr_prelievo', { p_importo: importo, p_nota: nota || '', p_data: data })); },
     async aggiungiLavoro(testo) { ok(await sb.from('lcr_lavori_da_fare').insert({ testo })); },
-    async lavoroFatto(id, fatto) { ok(await sb.from('lcr_lavori_da_fare').update({ fatto }).eq('id', id)); }
+    async lavoroFatto(id, fatto) { ok(await sb.from('lcr_lavori_da_fare').update({ fatto }).eq('id', id)); },
+    async lavoroModifica(id, testo, note) { ok(await sb.from('lcr_lavori_da_fare').update({ testo, note }).eq('id', id)); },
+    async lavoroElimina(id) { ok(await sb.from('lcr_lavori_da_fare').delete().eq('id', id)); }
   };
 }
 
@@ -310,8 +319,8 @@ function demoApi() {
     .sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : b.id - a.id));
   const prelieviTot = () => round2(movimenti.filter((m) => isPrelievo(m) && !m.annullato).reduce((t, m) => t + m.totale, 0));
   const lavori = [
-    { id: 1, testo: 'Ordinare filtri olio', fatto: false }, { id: 2, testo: 'Chiamare il fornitore pneumatici', fatto: false },
-    { id: 3, testo: 'Pulire il banco', fatto: true }
+    { id: 1, testo: 'Ordinare filtri olio', fatto: false, note: '' }, { id: 2, testo: 'Chiamare il fornitore pneumatici', fatto: false, note: '' },
+    { id: 3, testo: 'Pulire il banco', fatto: true, note: '' }
   ];
   const attesa = () => new Promise((r) => setTimeout(r, 120));
   const trova = (id) => schede.find((s) => s.id === id);
@@ -344,7 +353,12 @@ function demoApi() {
         cassa: round2(1000 + entrate - 312.4 - prelieviTot()), prelievi: prelieviTot(), daIncassare: round2(di.reduce((t, s) => t + s.prezzo_finale, 0)), daPagare: 245.5,
         magazzino: round2(articoli.reduce((t, a) => t + a.giacenza * a.costo_unit, 0)),
         guadagnoMese: round2(ids.reduce((t, i) => t + trova(i).prezzo_finale - trova(i).costo_materiali, 0)),
-        entratePreviste: round2(di.reduce((t, s) => t + s.prezzo_finale, 0)), entrateN: di.length,
+        entratePreviste: round2(di.reduce((t, s) => t + s.prezzo_finale, 0)), entrateN: di.length
+      };
+    },
+    async home() {
+      await attesa();
+      return {
         schedeAperte: schede.filter((s) => s.stato !== 'Completato').sort((a, b) => b.id - a.id).map(copia),
         lavori: lavori.slice().sort((a, b) => (a.fatto - b.fatto) || (b.id - a.id)).map(copia)
       };
@@ -388,8 +402,10 @@ function demoApi() {
       movimenti.push(M(nMov++, 0, 'Uscita', CAT_PRELIEVO, nota || 'Prelievo personale', '', importo,
         { data, fondo: 'Conto personale - fuori budget' }));
     },
-    async aggiungiLavoro(testo) { await attesa(); lavori.push({ id: nLav++, testo, fatto: false }); },
-    async lavoroFatto(id, fatto) { await attesa(); lavori.find((x) => x.id === id).fatto = fatto; }
+    async aggiungiLavoro(testo) { await attesa(); lavori.push({ id: nLav++, testo, fatto: false, note: '' }); },
+    async lavoroFatto(id, fatto) { await attesa(); lavori.find((x) => x.id === id).fatto = fatto; },
+    async lavoroModifica(id, testo, note) { await attesa(); Object.assign(lavori.find((x) => x.id === id), { testo, note }); },
+    async lavoroElimina(id) { await attesa(); lavori.splice(lavori.findIndex((x) => x.id === id), 1); }
   };
 }
 
@@ -508,18 +524,42 @@ function badgeStato(st) { return h('span', { class: 'badge ' + (st === 'Completa
 function badgePag(p) { return h('span', { class: 'badge ' + (p === 'Incassato' ? 'b-ok' : p === 'Parziale' ? 'b-par' : 'b-Da'), text: p }); }
 const kpi = (l, v, cls) => h('div', { class: 'kpi ' + (cls || '') }, h('div', { class: 'l', text: l }), h('div', { class: 'v' + (Number(v) < 0 ? ' neg' : ''), text: fmtEur(v) }));
 
-/* ---- 1. RIEPILOGO */
+/* ---- 1. RIEPILOGO (home): schede aperte, lavori da fare, tasto Contabilita' */
 async function pagRiepilogo() {
-  const r = await api.riepilogo();
+  const r = await api.home();
   let lavori = r.lavori;
   const lista = h('div', {});
+  // Tendina di una voce: testo + note, Salva
+  const apriLavoro = (l) => {
+    const s = openSheet('Lavoro');
+    const tx = tinp(l.testo, { maxlength: '300', 'aria-label': 'Lavoro' });
+    const nt = h('textarea', { 'aria-label': 'Note', maxlength: '2000' }); nt.value = l.note || '';
+    let invio = false;
+    const go = async () => {
+      const t = tx.value.trim();
+      if (!t) { toast('Testo mancante', true); return; }
+      if (invio) return;
+      invio = true;
+      const okk = await run(async () => { await api.lavoroModifica(l.id, t, nt.value.trim()); return true; });
+      invio = false;
+      if (okk) { l.testo = t; l.note = nt.value.trim(); s.close(); disegnaLavori(); }
+    };
+    s.set(campo('Lavoro', tx), campo('Note', nt), btn('Salva', 'check', 'full', go));
+  };
+  const elimina = async (l) => {
+    if (!(await confirmDlg('Eliminare questo lavoro?', 'Elimina'))) return;
+    const okk = await run(async () => { await api.lavoroElimina(l.id); return true; });
+    if (okk) { lavori = lavori.filter((x) => x.id !== l.id); disegnaLavori(); }
+  };
   const disegnaLavori = () => {
     lavori = lavori.slice().sort((a, b) => (a.fatto - b.fatto) || (b.id - a.id));
     if (!lavori.length) { lista.replaceChildren(h('div', { class: 'empty', text: '—' })); return; }
     lista.replaceChildren(...lavori.map((l) => h('div', { class: 'todo' + (l.fatto ? ' done' : '') },
       h('button', { type: 'button', class: 'ck', 'aria-label': 'Fatto', 'aria-pressed': String(!!l.fatto),
         onclick: () => run(async () => { await api.lavoroFatto(l.id, !l.fatto); l.fatto = !l.fatto; disegnaLavori(); }) }, l.fatto ? ic('check') : null),
-      h('div', { class: 'tx', text: l.testo }))));
+      h('button', { type: 'button', class: 'tx txb', 'aria-label': 'Apri', onclick: () => apriLavoro(l) },
+        h('span', { text: l.testo }), l.note ? h('span', { class: 'nota-ic', title: 'Note' }, ic('note')) : null),
+      ibtn('trash', 'Elimina', 'dng sm', () => elimina(l)))));
   };
   const aggiungi = () => {
     const s = openSheet('Nuovo lavoro');
@@ -536,6 +576,19 @@ async function pagRiepilogo() {
   };
   disegnaLavori();
   return h('div', { class: 'page' },
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Schede aperte' })),
+    r.schedeAperte.length ? r.schedeAperte.map(cardScheda) : h('div', { class: 'empty', text: '—' }),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Lavori da fare' }), ibtn('plus', 'Aggiungi', '', aggiungi)),
+    lista,
+    h('div', { class: 'gap' }),
+    btn('Contabilità', 'cash', 'full big-btn', () => { location.hash = '#contabilita'; }));
+}
+
+/* ---- CONTABILITA' (tutto il blocco soldi) */
+async function pagContabilita() {
+  const r = await api.riepilogo();
+  return h('div', { class: 'page' },
+    h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#riepilogo'; } }, ic('back'), h('span', { text: 'Riepilogo' })),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Panoramica' })),
     h('div', { class: 'grid2' }, kpi('Cassa', r.cassa), kpi('Da incassare', r.daIncassare), kpi('Da pagare', r.daPagare),
       kpi('Magazzino', r.magazzino),
@@ -548,11 +601,7 @@ async function pagRiepilogo() {
     h('div', { class: 'sec-t' }, h('h2', { text: 'Entrate previste' })),
     h('div', { class: 'kpi' }, h('div', { class: 'l', text: r.entrateN + (r.entrateN === 1 ? ' scheda' : ' schede') }), h('div', { class: 'v', text: fmtEur(r.entratePreviste) })),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Uscite previste' })),
-    h('div', { class: 'kpi' }, h('div', { class: 'l', text: 'Fornitori' }), h('div', { class: 'v', text: fmtEur(r.daPagare) })),
-    h('div', { class: 'sec-t' }, h('h2', { text: 'Schede aperte' })),
-    r.schedeAperte.length ? r.schedeAperte.map(cardScheda) : h('div', { class: 'empty', text: '—' }),
-    h('div', { class: 'sec-t' }, h('h2', { text: 'Lavori da fare' }), ibtn('plus', 'Aggiungi', '', aggiungi)),
-    lista);
+    h('div', { class: 'kpi' }, h('div', { class: 'l', text: 'Fornitori' }), h('div', { class: 'v', text: fmtEur(r.daPagare) })));
 }
 // Tendina Prelievo: importo > 0, nota facoltativa, data (default oggi)
 function tendinaPrelievo() {
@@ -632,7 +681,7 @@ async function pagMovimenti(tipoIniz) {
   selMese.addEventListener('change', () => { st.mese = selMese.value; run(() => carica(true)); });
   await carica(true);
   return h('div', { class: 'page' },
-    h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#riepilogo'; } }, ic('back'), h('span', { text: 'Riepilogo' })),
+    h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#contabilita'; } }, ic('back'), h('span', { text: 'Contabilità' })),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Movimenti' })),
     h('div', { class: 'bar' }, selTipo, selMese),
     tot, h('div', { class: 'gap' }), lista, altri);
@@ -818,8 +867,8 @@ const VOCI = [['riepilogo', 'Riepilogo', 'home'], ['schede', 'Schede', 'schede']
 async function route(mantieni) {
   const my = ++tok;
   const parti = (location.hash || '#riepilogo').slice(1).split('/');
-  const pag = VOCI.some((v) => v[0] === parti[0]) || parti[0] === 'movimenti' ? parti[0] : 'riepilogo';
-  const navOn = pag === 'movimenti' ? 'riepilogo' : pag;
+  const pag = VOCI.some((v) => v[0] === parti[0]) || parti[0] === 'movimenti' || parti[0] === 'contabilita' ? parti[0] : 'riepilogo';
+  const navOn = pag === 'movimenti' || pag === 'contabilita' ? 'riepilogo' : pag;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.p === navOn));
   const m = main();
   const y = m.scrollTop;
@@ -829,6 +878,7 @@ async function route(mantieni) {
     let nodo;
     if (pag === 'riepilogo') nodo = await pagRiepilogo();
     else if (pag === 'schede') nodo = parti[1] && /^\d+$/.test(parti[1]) ? await pagScheda(Number(parti[1])) : await pagSchede();
+    else if (pag === 'contabilita') nodo = await pagContabilita();
     else if (pag === 'movimenti') nodo = await pagMovimenti(parti[1]);
     else nodo = await pagMagazzino();
     if (my !== tok) return;

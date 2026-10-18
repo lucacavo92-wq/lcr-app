@@ -132,6 +132,13 @@ label.f > span { display: block; margin-bottom: 5px; font-size: .85rem; font-wei
 .todo.done .ck { background: var(--acc); }
 .todo.done .tx { text-decoration: line-through; color: var(--mut); }
 .todo .tx { flex: 1; overflow-wrap: anywhere; }
+.todo .txb { display: flex; align-items: center; gap: 8px; min-height: 54px; padding: 0 4px; background: none; border: 0;
+  text-align: left; color: inherit; cursor: pointer; }
+.todo .txb span:first-child { flex: 1; }
+.todo .nota-ic { color: var(--acc); display: inline-flex; flex: none; }
+.todo.done .nota-ic { color: var(--mut); }
+.btn.big-btn { min-height: 72px; font-size: 1.2rem; }
+.btn.big-btn svg { width: 30px; height: 30px; }
 
 /* scheda */
 .back { display: inline-flex; align-items: center; gap: 4px; min-height: 48px; padding: 0 12px 0 4px; margin-bottom: 8px; background: none; border: 0; color: var(--acc); font-weight: 700; cursor: pointer; }
