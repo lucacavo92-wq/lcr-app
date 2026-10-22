@@ -182,3 +182,6 @@ label.f > span { display: block; margin-bottom: 5px; font-size: .85rem; font-wei
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Extra scheda: voce, prezzo, tasto + */
+.extra-add { display: grid; grid-template-columns: 1fr 7rem auto; gap: 8px; align-items: end; }

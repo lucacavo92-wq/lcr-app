@@ -224,6 +224,8 @@ function realApi() {
       return ok(await sb.rpc('lcr_aggiungi_riga_magazzino', { p_scheda: scheda, p_articolo: articolo, p_quantita: q, p_prezzo: prezzo, p_nota: nota || '' }));
     },
     async rimuoviRiga(riga, motivo) { ok(await sb.rpc('lcr_rimuovi_riga', { p_riga: riga, p_motivo: motivo || '' })); },
+    async aggiungiExtra(scheda, voce, prezzo) { ok(await sb.rpc('lcr_aggiungi_extra', { p_scheda: scheda, p_voce: voce, p_prezzo: prezzo })); },
+    async rimuoviExtra(riga) { ok(await sb.rpc('lcr_rimuovi_extra', { p_riga: riga })); },
     async articoli() { return ok(await sb.from('lcr_articoli').select('*').order('nome')); },
     async updateArticolo(id, campi, codice) {
       ok(await sb.from('lcr_articoli').update(campi).eq('id', id));
@@ -372,6 +374,19 @@ function demoApi() {
       const art = articoli.find((x) => x.id === a);
       if (art.giacenza < q) throw { message: 'Giacenza insufficiente per ' + art.nome + ': ' + art.giacenza };
       add(id, a, q, p);
+    },
+    async aggiungiExtra(id, voce, prezzo) {
+      await attesa();
+      righe.push({ id: nRiga++, scheda_id: id, articolo_id: null, nome: voce, origine: 'esterno', extra: true, quantita: 1, costo_unit: 0, prezzo_unit: prezzo });
+      const s = trova(id);
+      if (s.prezzo_manuale) s.prezzo_finale = round2(s.prezzo_finale + prezzo); else ricalc(id);
+    },
+    async rimuoviExtra(riga) {
+      await attesa();
+      const r = righe.find((x) => x.id === riga);
+      righe = righe.filter((x) => x.id !== riga);
+      const s = trova(r.scheda_id);
+      if (s.prezzo_manuale) s.prezzo_finale = round2(s.prezzo_finale - r.prezzo_unit); else ricalc(r.scheda_id);
     },
     async rimuoviRiga(riga) {
       await attesa();
@@ -740,6 +755,22 @@ async function pagScheda(id) {
     if (okk) { toast('Rimosso'); route(true); }
   };
 
+  const extraV = tinp(''); extraV.setAttribute('aria-label', 'Voce');
+  const extraP = ninp(''); extraP.setAttribute('aria-label', 'Prezzo €');
+  const aggiungiExtra = async () => {
+    const v = extraV.value.trim(), p = parseNum(extraP.value);
+    if (!v) { toast('Voce mancante', true); return; }
+    if (isNaN(p)) { toast('Prezzo non valido', true); return; }
+    const okk = await run(async () => { await api.aggiungiExtra(s.id, v, p); return true; });
+    if (okk) { toast('Aggiunto'); route(true); }
+  };
+  const rimuoviExtra = async (r) => {
+    if (!(await confirmDlg('Rimuovere ' + r.nome + '?', 'Rimuovi'))) return;
+    const okk = await run(async () => { await api.rimuoviExtra(r.id); return true; });
+    if (okk) { toast('Rimosso'); route(true); }
+  };
+  const extraRighe = righe.filter((r) => r.extra), ricambi = righe.filter((r) => !r.extra);
+
   return h('div', { class: 'page' },
     h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#schede'; } }, ic('back'), h('span', { text: 'Schede' })),
     h('div', { class: 'head-s' }, h('h2', { text: s.codice }),
@@ -752,6 +783,11 @@ async function pagScheda(id) {
       btn('Salva', 'check', 'full', salva)),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Prezzo' }), s.prezzo_manuale ? h('span', { class: 'badge b-par', text: 'Manuale' }) : null),
     h('div', { class: 'card' },
+      h('div', { class: 'extra-add' }, campo('Extra', extraV), campo('Prezzo €', extraP), ibtn('plus', 'Aggiungi extra', '', aggiungiExtra)),
+      extraRighe.map((r) => h('div', { class: 'riga' },
+        h('div', { class: 'grow' }, h('div', { class: 'sp', text: r.nome })),
+        h('div', { class: 'r', text: fmtEur(Number(r.quantita) * Number(r.prezzo_unit)) }),
+        ibtn('trash', 'Rimuovi', 'dng sm', () => rimuoviExtra(r)))),
       campo('Prezzo finale €', prezzo),
       h('div', { class: 'row small muted' }, h('span', { text: 'Calcolato' }), h('span', { text: fmtEur(calcolato) })),
       h('div', { class: 'two' },
@@ -759,7 +795,7 @@ async function pagScheda(id) {
         s.prezzo_manuale ? btn('Ripristina calcolo', 'undo', 'sec', ripristina) : h('span', {}))),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Ricambi' }), ibtn('plus', 'Aggiungi ricambio', '', () => tendinaRicambio(s))),
     h('div', { class: 'card' },
-      righe.length ? righe.map((r) => h('div', { class: 'riga' },
+      ricambi.length ? ricambi.map((r) => h('div', { class: 'riga' },
         h('div', { class: 'grow' }, h('div', { class: 'sp', text: r.nome }),
           h('div', { class: 'small muted', text: fmtNum(r.quantita) + ' × ' + fmtEur(r.prezzo_unit) + (r.origine === 'esterno' ? ' · esterno' : '') })),
         h('div', { class: 'r', text: fmtEur(Number(r.quantita) * Number(r.prezzo_unit)) }),
