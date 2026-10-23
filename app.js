@@ -56,7 +56,8 @@ const ICONS = {
   list: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01',
   note: 'M6 3h9l4 4v14H6zM9 12h7M9 16h7',
   fattura: 'M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6',
-  cash: 'M3 7h18v10H3zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM6 12h.01M18 12h.01'
+  cash: 'M3 7h18v10H3zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM6 12h.01M18 12h.01',
+  user: 'M12 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4 21c0-4.4 3.6-7 8-7s8 2.6 8 7'
 };
 function ic(name) {
   const ns = 'http://www.w3.org/2000/svg';
@@ -273,7 +274,31 @@ function realApi() {
       return { fattura: ok(f), righe: righe.map((x) => Object.assign({}, x, { scheda_codice: x.scheda_id ? cod[x.scheda_id] || '' : '' })) };
     },
     async pagaFattura(id, metodo, data) { ok(await sb.rpc('lcr_paga_fattura', { p_fattura: id, p_metodo: metodo, p_data: data })); },
-    async prelievo(importo, nota, data) { ok(await sb.rpc('lcr_prelievo', { p_importo: importo, p_nota: nota || '', p_data: data })); },
+    async prelievo(importo, nota, data, perCosa) { ok(await sb.rpc('lcr_prelievo', { p_importo: importo, p_nota: nota || '', p_data: data, p_per_cosa: perCosa || 'altro' })); },
+    // Da incassare: schede non incassate, dall'ultima
+    async schedeDaIncassare() {
+      return ok(await sb.from('lcr_schede').select('id,codice,cliente_testo,moto_testo,prezzo_finale,stato,pagamento').neq('pagamento', 'Incassato').order('id', { ascending: false }));
+    },
+    // Da pagare: uscite non annullate con stato 'Da pagare' (+ dati della fattura collegata)
+    async movimentiDaPagare() {
+      const mv = ok(await sb.from('lcr_movimenti_contabili').select('id,data,descrizione,controparte,totale,fondo,fattura_id')
+        .eq('tipo', 'Uscita').eq('stato_pagamento', 'Da pagare').eq('annullato', false).order('data', { ascending: false }).order('id', { ascending: false }));
+      const ids = Array.from(new Set(mv.map((m) => m.fattura_id).filter(Boolean)));
+      const ff = {};
+      if (ids.length) ok(await sb.from('lcr_fatture').select('id,fornitore,numero').in('id', ids)).forEach((f) => { ff[f.id] = f; });
+      return mv.map((m) => Object.assign({}, m, { fattura: m.fattura_id ? ff[m.fattura_id] || null : null }));
+    },
+    // Uso personale
+    async usoPersonale() {
+      return ok(await sb.from('lcr_uso_personale').select('id,data,descrizione,per_cosa,tipo,importo,note').order('data', { ascending: false }).order('id', { ascending: false }));
+    },
+    async usoModifica(id, campi) { ok(await sb.from('lcr_uso_personale').update(campi).eq('id', id)); },
+    async usoMagazzino(articolo, q, perCosa, nota, data) {
+      ok(await sb.rpc('lcr_uso_personale_magazzino', { p_articolo: articolo, p_quantita: q, p_per_cosa: perCosa, p_nota: nota || '', p_data: data }));
+    },
+    async usoSpesa(importo, descrizione, perCosa, data, nota) {
+      ok(await sb.rpc('lcr_uso_personale_spesa', { p_importo: importo, p_descrizione: descrizione, p_per_cosa: perCosa, p_data: data, p_nota: nota || '' }));
+    },
     async aggiungiLavoro(testo) { ok(await sb.from('lcr_lavori_da_fare').insert({ testo })); },
     async lavoroFatto(id, fatto) { ok(await sb.from('lcr_lavori_da_fare').update({ fatto }).eq('id', id)); },
     async lavoroModifica(id, testo, note) { ok(await sb.from('lcr_lavori_da_fare').update({ testo, note }).eq('id', id)); },
@@ -333,7 +358,20 @@ function demoApi() {
     M(7, 20, 'Uscita', 'Utenze', 'Luce officina', 'Energia Spa', 96.9),
     M(8, 35, 'Entrata', 'Lavori', 'Incasso tagliando', 'Giulia Verdi', 180),
     M(9, 40, 'Uscita', 'Affitto', 'Affitto locale', 'Immobiliare Sole', 400),
-    M(10, 45, 'Uscita', 'Prelievo personale', 'Prelievo personale', '', 100, { fondo: 'Conto personale - fuori budget' })
+    M(10, 45, 'Uscita', 'Prelievo personale', 'Prelievo personale', '', 100, { fondo: 'Conto personale - fuori budget' }),
+    M(11, 5, 'Uscita', 'Materiali', 'Fattura 2026/412', 'Ricambi Rossi Srl', 107, { stato_pagamento: 'Da pagare', fattura_id: 1 }),
+    M(12, 2, 'Uscita', 'Spesa personale', 'Gomme furgone', 'Gommista Sud', 60, { stato_pagamento: 'Da pagare', fondo: 'Conto personale - fuori budget' })
+  ];
+  const daPagareTot = () => round2(movimenti.filter((m) => m.tipo === 'Uscita' && m.stato_pagamento === 'Da pagare' && !m.annullato).reduce((t, m) => t + m.totale, 0));
+  // Uso personale (dati inventati)
+  let nUso = 10;
+  const uso = [
+    { id: 1, data: gg(3), descrizione: 'Olio motore 10W40 1L', per_cosa: 'moto', tipo: 'magazzino', importo: 11.5, note: '' },
+    { id: 2, data: gg(8), descrizione: 'Catena e pignone', per_cosa: 'moto', tipo: 'spesa', importo: 85, note: 'Ricambi online' },
+    { id: 3, data: gg(10), descrizione: 'Assicurazione furgone', per_cosa: 'furgone', tipo: 'spesa', importo: 320, note: '' },
+    { id: 4, data: gg(12), descrizione: 'Prelievo personale', per_cosa: 'altro', tipo: 'prelievo', importo: 200, note: '' },
+    { id: 5, data: gg(20), descrizione: 'Filtro aria', per_cosa: 'furgone', tipo: 'magazzino', importo: 22, note: '' },
+    { id: 6, data: gg(25), descrizione: 'Casco nuovo', per_cosa: 'altro', tipo: 'spesa', importo: 150, note: '' }
   ];
   const movFiltra = (f) => movimenti.filter((m) => (
     f.tipo === 'entrate' ? m.tipo === 'Entrata' : f.tipo === 'uscite' ? m.tipo === 'Uscita' && !isPrelievo(m) : f.tipo === 'prelievi' ? isPrelievo(m) : true) &&
@@ -385,7 +423,7 @@ function demoApi() {
       const ym = oggi.slice(0, 7);
       const ids = Array.from(new Set(movimenti.filter((m) => m.tipo === 'Entrata' && !m.annullato && m.scheda_id && m.data.slice(0, 7) === ym).map((m) => m.scheda_id)));
       return {
-        cassa: round2(1000 + entrate - 312.4 - prelieviTot()), prelievi: prelieviTot(), daIncassare: round2(di.reduce((t, s) => t + s.prezzo_finale, 0)), daPagare: 245.5,
+        cassa: round2(1000 + entrate - 312.4 - prelieviTot()), prelievi: prelieviTot(), daIncassare: round2(di.reduce((t, s) => t + s.prezzo_finale, 0)), daPagare: daPagareTot(),
         magazzino: round2(articoli.reduce((t, a) => t + a.giacenza * a.costo_unit, 0)),
         guadagnoMese: round2(ids.reduce((t, i) => t + trova(i).prezzo_finale - trova(i).costo_materiali, 0)),
         entratePreviste: round2(di.reduce((t, s) => t + s.prezzo_finale, 0)), entrateN: di.length
@@ -455,10 +493,37 @@ function demoApi() {
       await attesa();
       Object.assign(fatture.find((x) => x.id === id), { stato: 'Pagata', metodo, data_pagamento: data });
     },
-    async prelievo(importo, nota, data) {
+    async prelievo(importo, nota, data, perCosa) {
       await attesa();
       movimenti.push(M(nMov++, 0, 'Uscita', CAT_PRELIEVO, nota || 'Prelievo personale', '', importo,
         { data, fondo: 'Conto personale - fuori budget' }));
+      uso.push({ id: nUso++, data, descrizione: nota || 'Prelievo personale', per_cosa: perCosa || 'altro', tipo: 'prelievo', importo, note: '' });
+    },
+    async schedeDaIncassare() {
+      await attesa();
+      return schede.filter((s) => s.pagamento !== 'Incassato').sort((a, b) => b.id - a.id).map(copia);
+    },
+    async movimentiDaPagare() {
+      await attesa();
+      return movimenti.filter((m) => m.tipo === 'Uscita' && m.stato_pagamento === 'Da pagare' && !m.annullato)
+        .sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : b.id - a.id))
+        .map((m) => Object.assign({}, m, { fattura: m.fattura_id ? copia(fatture.find((x) => x.id === m.fattura_id)) : null }));
+    },
+    async usoPersonale() {
+      await attesa();
+      return uso.slice().sort((a, b) => (a.data < b.data ? 1 : a.data > b.data ? -1 : b.id - a.id)).map(copia);
+    },
+    async usoModifica(id, campi) { await attesa(); Object.assign(uso.find((x) => x.id === id), campi); },
+    async usoMagazzino(articolo, q, perCosa, nota, data) {
+      await attesa();
+      const art = articoli.find((x) => x.id === articolo);
+      if (art.giacenza < q) throw { message: 'Giacenza insufficiente' };
+      art.giacenza -= q;
+      uso.push({ id: nUso++, data, descrizione: art.nome, per_cosa: perCosa, tipo: 'magazzino', importo: round2(q * art.costo_unit), note: nota || '' });
+    },
+    async usoSpesa(importo, descrizione, perCosa, data, nota) {
+      await attesa();
+      uso.push({ id: nUso++, data, descrizione, per_cosa: perCosa, tipo: 'spesa', importo, note: nota || '' });
     },
     async aggiungiLavoro(testo) { await attesa(); lavori.push({ id: nLav++, testo, fatto: false, note: '' }); },
     async lavoroFatto(id, fatto) { await attesa(); lavori.find((x) => x.id === id).fatto = fatto; },
@@ -652,9 +717,152 @@ async function pagRiepilogo() {
     h('div', { class: 'sec-t' }, h('h2', { text: 'Schede aperte' })),
     r.schedeAperte.length ? r.schedeAperte.map(cardScheda) : h('div', { class: 'empty', text: '—' }),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Lavori da fare' }), ibtn('plus', 'Aggiungi', '', aggiungi)),
-    lista,
+    lista);
+}
+
+// Riquadro cliccabile
+const kpiLink = (l, v, hash) => h('button', { type: 'button', class: 'kpi kpib', onclick: () => { location.hash = hash; } },
+  h('div', { class: 'l', text: l }), h('div', { class: 'v' + (Number(v) < 0 ? ' neg' : ''), text: fmtEur(v) }));
+const backA = (hash, label) => h('button', { type: 'button', class: 'back', onclick: () => { location.hash = hash; } }, ic('back'), h('span', { text: label }));
+
+/* ---- CONTABILITA' > Da incassare: schede non incassate */
+async function pagDaIncassare() {
+  const l = await api.schedeDaIncassare();
+  const tot = round2(l.reduce((t, s) => t + (Number(s.prezzo_finale) || 0), 0));
+  return h('div', { class: 'page' }, backA('#contabilita', 'Contabilità'),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Da incassare' })),
+    h('div', { class: 'kpi' }, h('div', { class: 'l', text: l.length + (l.length === 1 ? ' scheda' : ' schede') }), h('div', { class: 'v', text: fmtEur(tot) })),
     h('div', { class: 'gap' }),
-    btn('Contabilità', 'cash', 'full big-btn', () => { location.hash = '#contabilita'; }));
+    l.length ? l.map(cardScheda) : h('div', { class: 'empty', text: '—' }));
+}
+
+/* ---- CONTABILITA' > Da pagare: uscite da pagare (fatture comprese) */
+async function pagDaPagare() {
+  const l = await api.movimentiDaPagare();
+  const tot = round2(l.reduce((t, m) => t + (Number(m.totale) || 0), 0));
+  const riga = (m) => {
+    const f = m.fattura;
+    const sub = [fmtData(m.data), f ? [f.fornitore, f.numero].filter(Boolean).join(' ') : m.controparte].filter(Boolean).join(' · ');
+    const pers = String(m.fondo || '').indexOf('Conto personale') === 0;
+    const cont = [
+      h('div', { class: 'grow' }, h('div', { class: 't', text: m.descrizione || '—' }), h('div', { class: 's', text: sub }),
+        (f || pers) ? h('div', { class: 'badges' }, f ? h('span', { class: 'badge b-lav', text: 'Fattura' }) : null, pers ? h('span', { class: 'badge b-lav', text: 'Personale' }) : null) : null),
+      h('div', { class: 'r out', text: fmtEur(Math.abs(Number(m.totale))) })];
+    return f ? h('button', { type: 'button', class: 'item', onclick: () => { location.hash = '#fatture/' + m.fattura_id; } }, ...cont)
+      : h('div', { class: 'item static' }, ...cont);
+  };
+  return h('div', { class: 'page' }, backA('#contabilita', 'Contabilità'),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Da pagare' })),
+    h('div', { class: 'kpi' }, h('div', { class: 'l', text: l.length + (l.length === 1 ? ' voce' : ' voci') }), h('div', { class: 'v', text: fmtEur(tot) })),
+    h('div', { class: 'gap' }),
+    l.length ? l.map(riga) : h('div', { class: 'empty', text: '—' }));
+}
+
+/* ---- PERSONALE: spese e prelievi per se' (moto, furgone, altro) */
+const PERCOSA = ['Moto', 'Furgone', 'Altro'];
+const TIPOUSO = { magazzino: 'Magazzino', spesa: 'Spesa', prelievo: 'Prelievo' };
+const perLabel = (v) => { const s = String(v || 'altro'); return s.charAt(0).toUpperCase() + s.slice(1); };
+
+async function pagPersonale() {
+  let voci = await api.usoPersonale();
+  let filtro = 'tutto';
+  const tot = h('div', {}), tot3 = h('div', { class: 'grid3' }), totG = h('div', {});
+  tot.append(tot3, h('div', { class: 'gap' }), totG);
+  const lista = h('div', {});
+  const sel = h('select', { 'aria-label': 'Filtro' }, [['tutto', 'Tutto'], ['moto', 'Moto'], ['furgone', 'Furgone'], ['altro', 'Altro']]
+    .map((o) => h('option', { value: o[0], text: o[1] })));
+  sel.addEventListener('change', () => { filtro = sel.value; disegna(); });
+  const modifica = (v) => {
+    const sh = openSheet('Voce');
+    const desc = tinp(v.descrizione, { maxlength: '200', 'aria-label': 'Descrizione' });
+    const per = selezione(PERCOSA, perLabel(v.per_cosa));
+    const nota = h('textarea', { 'aria-label': 'Nota', maxlength: '2000' }); nota.value = v.note || '';
+    let invio = false;
+    const go = async () => {
+      if (invio) return;
+      if (!desc.value.trim()) { toast('Descrizione mancante', true); return; }
+      invio = true;
+      const okk = await run(async () => { await api.usoModifica(v.id, { descrizione: desc.value.trim(), per_cosa: per.value.toLowerCase(), note: nota.value.trim() }); return true; });
+      invio = false;
+      if (okk) { sh.close(); toast('Salvato'); route(true); }
+    };
+    sh.set(h('div', { class: 'row' }, h('span', { class: 'badge b-lav', text: TIPOUSO[v.tipo] || v.tipo }), h('span', { class: 'pz', text: fmtEur(v.importo) })),
+      campo('Descrizione', desc), campo('Per cosa', per), campo('Nota', nota));
+    sh.foot(btn('Salva', 'check', 'full', go));
+  };
+  const disegna = () => {
+    const somme = { moto: 0, furgone: 0, altro: 0 };
+    voci.forEach((v) => { somme[v.per_cosa] = (somme[v.per_cosa] || 0) + (Number(v.importo) || 0); });
+    const generale = round2(somme.moto + somme.furgone + somme.altro);
+    const k3 = (l, v) => h('div', { class: 'kpi sm' }, h('div', { class: 'l', text: l }), h('div', { class: 'v', text: fmtEur(v) }));
+    tot3.replaceChildren(k3('Moto', round2(somme.moto)), k3('Furgone', round2(somme.furgone)), k3('Altro', round2(somme.altro)));
+    totG.replaceChildren(kpi('Totale', generale));
+    const v2 = voci.filter((v) => filtro === 'tutto' || v.per_cosa === filtro);
+    lista.replaceChildren(...(v2.length ? v2.map((v) => h('button', { type: 'button', class: 'item', onclick: () => modifica(v) },
+      h('div', { class: 'grow' }, h('div', { class: 't', text: v.descrizione || '—' }), h('div', { class: 's', text: fmtData(v.data) }),
+        h('div', { class: 'badges' }, h('span', { class: 'badge b-par', text: perLabel(v.per_cosa) }), h('span', { class: 'badge b-lav', text: TIPOUSO[v.tipo] || v.tipo || '' }))),
+      h('div', { class: 'r out', text: fmtEur(v.importo) }))) : [h('div', { class: 'empty', text: '—' })]));
+  };
+  disegna();
+  return h('div', { class: 'page' },
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Personale' })),
+    tot, h('div', { class: 'gap' }),
+    h('div', { class: 'grid2' }, btn('Dal magazzino', 'plus', 'sec', () => tendinaUsoMagazzino()), btn('Spesa', 'plus', 'sec', () => tendinaUsoSpesa())),
+    h('div', { class: 'gap' }), h('div', { class: 'bar' }, sel), lista);
+}
+
+// Pezzo del magazzino preso per uso personale
+async function tendinaUsoMagazzino() {
+  const sh = openSheet('Dal magazzino');
+  sh.set(h('div', { class: 'empty', text: '…' }));
+  const lista = await run(() => api.articoli());
+  if (!lista) { sh.close(); return; }
+  const scegli = (a) => {
+    sh.setTitle(a.nome);
+    const q = ninp(1), per = selezione(PERCOSA, 'Altro'), nota = tinp('', { maxlength: '200', 'aria-label': 'Nota' });
+    let invio = false;
+    const go = async () => {
+      if (invio) return;
+      const qn = parseNum(q.value);
+      if (!(qn > 0)) { toast('Quantità non valida', true); return; }
+      invio = true;
+      const okk = await run(async () => { await api.usoMagazzino(a.id, qn, per.value.toLowerCase(), nota.value.trim(), isoLocale(new Date())); return true; });
+      invio = false;
+      if (okk) { sh.close(); toast('Registrato'); route(true); }
+    };
+    sh.set(
+      h('div', { class: 'row' }, h('span', { class: 'muted', text: [a.marchio, a.sezione].filter(Boolean).join(' · ') }),
+        h('span', { class: 'pz', text: fmtNum(a.giacenza) + ' ' + a.unita })),
+      campo('Quantità', q), campo('Per cosa', per), campo('Nota', nota),
+      h('button', { type: 'button', class: 'back', onclick: () => { sh.setTitle('Dal magazzino'); sh.set(sfoglia(lista, { onPick: scegli })); } }, ic('back'), h('span', { text: 'Magazzino' })));
+    sh.foot(btn('Aggiungi', 'plus', 'full', go));
+    setTimeout(() => q.select(), 250);
+  };
+  sh.set(sfoglia(lista, { onPick: scegli }));
+}
+
+// Spesa personale: importo, descrizione, per cosa, data
+function tendinaUsoSpesa() {
+  const sh = openSheet('Spesa');
+  const imp = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '0,00', 'aria-label': 'Importo' });
+  const desc = tinp('', { maxlength: '200', 'aria-label': 'Descrizione' });
+  const per = selezione(PERCOSA, 'Altro');
+  const data = h('input', { type: 'date', value: isoLocale(new Date()), 'aria-label': 'Data' });
+  let invio = false;
+  const go = async () => {
+    if (invio) return;
+    const v = parseNum(imp.value);
+    if (!(v > 0)) { toast('Importo non valido', true); return; }
+    if (!desc.value.trim()) { toast('Descrizione mancante', true); return; }
+    if (!data.value) { toast('Data mancante', true); return; }
+    invio = true;
+    const okk = await run(async () => { await api.usoSpesa(round2(v), desc.value.trim(), per.value.toLowerCase(), data.value, ''); return true; });
+    invio = false;
+    if (okk) { sh.close(); toast('Spesa registrata'); route(true); }
+  };
+  sh.set(campo('Importo €', imp), campo('Descrizione', desc), campo('Per cosa', per), campo('Data', data));
+  sh.foot(btn('Conferma', 'check', 'full', go));
+  setTimeout(() => imp.focus(), 250);
 }
 
 /* ---- CONTABILITA' (tutto il blocco soldi) */
@@ -663,10 +871,9 @@ async function pagContabilita() {
   return h('div', { class: 'page' },
     h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#riepilogo'; } }, ic('back'), h('span', { text: 'Riepilogo' })),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Panoramica' })),
-    h('div', { class: 'grid2' }, kpi('Cassa', r.cassa), kpi('Da incassare', r.daIncassare), kpi('Da pagare', r.daPagare),
-      kpi('Magazzino', r.magazzino),
-      h('button', { type: 'button', class: 'kpi kpib', onclick: () => { location.hash = '#movimenti/prelievi'; } },
-        h('div', { class: 'l', text: 'Prelievi' }), h('div', { class: 'v', text: fmtEur(r.prelievi) })),
+    h('div', { class: 'grid2' }, kpiLink('Cassa', r.cassa, '#movimenti'), kpiLink('Da incassare', r.daIncassare, '#contabilita/da-incassare'),
+      kpiLink('Da pagare', r.daPagare, '#contabilita/da-pagare'), kpiLink('Magazzino', r.magazzino, '#magazzino'),
+      kpiLink('Prelievi', r.prelievi, '#movimenti/prelievi'),
       kpi('Guadagno del mese', r.guadagnoMese, 'big')),
     h('div', { class: 'grid2 acts' },
       btn('Movimenti', 'list', 'sec', () => { location.hash = '#movimenti'; }),
@@ -683,6 +890,7 @@ function tendinaPrelievo() {
   const imp = h('input', { type: 'text', inputmode: 'decimal', autocomplete: 'off', placeholder: '0,00', 'aria-label': 'Importo' });
   const nota = tinp('', { maxlength: '200' });
   const data = h('input', { type: 'date', value: isoLocale(new Date()), 'aria-label': 'Data' });
+  const per = selezione(PERCOSA, 'Altro');
   let invio = false;
   const go = async () => {
     if (invio) return;
@@ -690,12 +898,12 @@ function tendinaPrelievo() {
     if (!(v > 0)) { toast('Importo non valido', true); return; }
     if (!data.value) { toast('Data mancante', true); return; }
     invio = true;
-    const okk = await run(async () => { await api.prelievo(round2(v), nota.value.trim(), data.value); return true; });
+    const okk = await run(async () => { await api.prelievo(round2(v), nota.value.trim(), data.value, per.value.toLowerCase()); return true; });
     invio = false;
     if (okk) { sh.close(); toast('Prelievo registrato'); route(true); }
   };
   imp.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-  sh.set(campo('Importo €', imp), campo('Nota', nota), campo('Data', data));
+  sh.set(campo('Importo €', imp), campo('Per cosa', per), campo('Nota', nota), campo('Data', data));
   sh.foot(btn('Conferma', 'check', 'full', go));
   setTimeout(() => imp.focus(), 250);
 }
@@ -1039,14 +1247,15 @@ function nuovoArticolo(lista) {
 }
 
 /* ------------------------------------------------------------------ percorsi e avvio */
-const VOCI = [['riepilogo', 'Riepilogo', 'home'], ['schede', 'Schede', 'schede'], ['magazzino', 'Magazzino', 'box']];
+const VOCI = [['riepilogo', 'Riepilogo', 'home'], ['schede', 'Schede', 'schede'], ['contabilita', 'Contabilità', 'cash'],
+  ['magazzino', 'Magazzino', 'box'], ['personale', 'Personale', 'user']];
 
 async function route(mantieni) {
   const my = ++tok;
   guardia = null;
   const parti = (location.hash || '#riepilogo').slice(1).split('/');
-  const pag = VOCI.some((v) => v[0] === parti[0]) || parti[0] === 'movimenti' || parti[0] === 'contabilita' || parti[0] === 'fatture' ? parti[0] : 'riepilogo';
-  const navOn = pag === 'movimenti' || pag === 'contabilita' || pag === 'fatture' ? 'riepilogo' : pag;
+  const pag = VOCI.some((v) => v[0] === parti[0]) || parti[0] === 'movimenti' || parti[0] === 'fatture' ? parti[0] : 'riepilogo';
+  const navOn = pag === 'movimenti' || pag === 'fatture' ? 'contabilita' : pag;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.p === navOn));
   const m = main();
   const y = m.scrollTop;
@@ -1056,7 +1265,8 @@ async function route(mantieni) {
     let nodo;
     if (pag === 'riepilogo') nodo = await pagRiepilogo();
     else if (pag === 'schede') nodo = parti[1] && /^\d+$/.test(parti[1]) ? await pagScheda(Number(parti[1])) : await pagSchede();
-    else if (pag === 'contabilita') nodo = await pagContabilita();
+    else if (pag === 'contabilita') nodo = parti[1] === 'da-incassare' ? await pagDaIncassare() : parti[1] === 'da-pagare' ? await pagDaPagare() : await pagContabilita();
+    else if (pag === 'personale') nodo = await pagPersonale();
     else if (pag === 'fatture') nodo = parti[1] && /^\d+$/.test(parti[1]) ? await pagFattura(Number(parti[1])) : await pagFatture();
     else if (pag === 'movimenti') nodo = await pagMovimenti(parti[1]);
     else nodo = await pagMagazzino();
