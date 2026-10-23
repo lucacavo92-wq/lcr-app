@@ -93,14 +93,17 @@ function openSheet(title) {
   const body = h('div', { class: 'sheet-b' });
   const titleEl = h('h3', { text: title });
   const ov = h('div', { class: 'ov' });
+  const foot = h('div', { class: 'sheet-f', hidden: true });
   const api = {
     body,
+    // Tasto di conferma sempre visibile in fondo alla tendina
+    foot: (n) => { foot.replaceChildren(n); foot.hidden = false; },
     setTitle: (t) => { titleEl.textContent = t; },
-    set: (...n) => { body.replaceChildren(...n); body.scrollTop = 0; },
+    set: (...n) => { body.replaceChildren(...n); body.scrollTop = 0; foot.hidden = true; foot.replaceChildren(); },
     close: () => { const i = sheets.indexOf(api); if (i >= 0) sheets.splice(i, 1); ov.remove(); }
   };
   const panel = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' },
-    h('div', { class: 'sheet-h' }, titleEl, ibtn('x', 'Chiudi', 'sec', api.close)), body);
+    h('div', { class: 'sheet-h' }, titleEl, ibtn('x', 'Chiudi', 'sec', api.close)), body, foot);
   ov.append(panel);
   ov.addEventListener('click', (e) => { if (e.target === ov) api.close(); });
   $('layer').append(ov);
@@ -574,6 +577,19 @@ function selezione(valori, corrente) {
 /* ------------------------------------------------------------------ pagine */
 const main = () => $('main');
 let tok = 0;
+// Scheda aperta con modifiche: { sporco(): bool, salva(): Promise<bool> }
+let guardia = null;
+// "Uscire senza salvare?" con Salva / Esci; 'cont' viene chiamata se si puo' uscire
+function chiediUscita(cont) {
+  const ov = h('div', { class: 'ov dlg open' });
+  const fine = () => ov.remove();
+  ov.append(h('div', { class: 'box', role: 'alertdialog', 'aria-modal': 'true' },
+    h('p', { text: 'Uscire senza salvare?' }),
+    h('div', { class: 'btns' },
+      btn('Esci', null, 'sec', () => { fine(); guardia = null; cont(); }),
+      btn('Salva', 'check', '', async () => { fine(); if (guardia && await guardia.salva()) { guardia = null; cont(); } }))));
+  $('layer').append(ov);
+}
 
 function badgeStato(st) { return h('span', { class: 'badge ' + (st === 'Completato' ? 'b-ok' : st === 'In lavorazione' ? 'b-lav' : 'b-Aperto'), text: st }); }
 function badgePag(p) { return h('span', { class: 'badge ' + (p === 'Incassato' ? 'b-ok' : p === 'Parziale' ? 'b-par' : 'b-Da'), text: p }); }
@@ -599,7 +615,8 @@ async function pagRiepilogo() {
       invio = false;
       if (okk) { l.testo = t; l.note = nt.value.trim(); s.close(); disegnaLavori(); }
     };
-    s.set(campo('Lavoro', tx), campo('Note', nt), btn('Salva', 'check', 'full', go));
+    s.set(campo('Lavoro', tx), campo('Note', nt));
+    s.foot(btn('Salva', 'check', 'full', go));
   };
   const elimina = async (l) => {
     if (!(await confirmDlg('Eliminare questo lavoro?', 'Elimina'))) return;
@@ -626,7 +643,8 @@ async function pagRiepilogo() {
       if (okk) { s.close(); route(true); }
     };
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-    s.set(campo('Lavoro', inp), btn('Aggiungi', 'plus', 'full', go));
+    s.set(campo('Lavoro', inp));
+    s.foot(btn('Aggiungi', 'plus', 'full', go));
     setTimeout(() => inp.focus(), 250);
   };
   disegnaLavori();
@@ -677,7 +695,8 @@ function tendinaPrelievo() {
     if (okk) { sh.close(); toast('Prelievo registrato'); route(true); }
   };
   imp.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-  sh.set(campo('Importo €', imp), campo('Nota', nota), campo('Data', data), btn('Conferma', 'check', 'full', go));
+  sh.set(campo('Importo €', imp), campo('Nota', nota), campo('Data', data));
+  sh.foot(btn('Conferma', 'check', 'full', go));
   setTimeout(() => imp.focus(), 250);
 }
 
@@ -781,7 +800,8 @@ async function pagFattura(id) {
       invio = false;
       if (okk) { sh.close(); toast('Pagata'); route(true); }
     };
-    sh.set(campo('Metodo', met), campo('Data', data), btn('Conferma', 'check', 'full', go));
+    sh.set(campo('Metodo', met), campo('Data', data));
+    sh.foot(btn('Conferma', 'check', 'full', go));
   };
   const voce = (r) => h('div', { class: 'item static' },
     h('div', { class: 'grow' }, h('div', { class: 't', text: r.descrizione || '—' }),
@@ -826,17 +846,39 @@ async function pagScheda(id) {
   const note = h('textarea', { 'aria-label': 'Note' }); note.value = s.note || '';
   const prezzo = ninp(s.prezzo_finale);
 
+  // Valori iniziali, per sapere se ci sono modifiche non salvate
+  const campi = [descr, moto, ore, tar, note, prezzo];
+  const iniz = campi.map((c) => c.value.trim());
+  const sporco = () => campi.some((c, i) => c.value.trim() !== iniz[i]);
+  // Salva TUTTO in un colpo (campi + prezzo se cambiato). Ritorna true se salvato.
   const salva = async () => {
     const o = parseNum(ore.value), t = parseNum(tar.value);
-    if (!(o >= 0) || !(t >= 0)) { toast('Ore o tariffa non validi', true); return; }
+    if (!(o >= 0) || !(t >= 0)) { toast('Ore o tariffa non validi', true); return false; }
+    const prezzoMod = prezzo.value.trim() !== iniz[5];
+    const p = parseNum(prezzo.value);
+    if (prezzoMod) {
+      if (!(p >= 0)) { toast('Prezzo non valido', true); return false; }
+      if (!(await confirmDlg('Prezzo manuale ' + fmtEur(p) + '?', 'Conferma'))) return false;
+    }
     const okk = await run(async () => {
       await api.updateScheda(s.id, { descrizione: descr.value.trim(), moto_testo: moto.value.trim(), ore: o, tariffa: t, note: note.value.trim() }, s.codice);
-      if (!s.prezzo_manuale) await api.ricalcola(s.id);
+      if (prezzoMod) await api.updateScheda(s.id, { prezzo_finale: p, prezzo_manuale: true }, s.codice);
+      else if (!s.prezzo_manuale) await api.ricalcola(s.id);
       return true;
     });
-    if (okk) { toast('Salvato'); route(true); }
+    if (okk) { guardia = null; toast('Salvato'); route(true); }
+    return !!okk;
   };
+  const tastoSalva = btn('Salva', 'check', 'full', salva, { disabled: true });
+  const aggiorna = () => {
+    const sp = sporco();
+    tastoSalva.disabled = !sp;
+    tastoSalva.classList.toggle('dirty', sp);
+  };
+  campi.forEach((c) => c.addEventListener('input', aggiorna));
+  guardia = { sporco, salva };
   const salvaPrezzo = async () => {
+    if (prezzo.value.trim() !== iniz[5]) { await salva(); return; } // salva tutto insieme, senza perdere altre modifiche
     const p = parseNum(prezzo.value);
     if (!(p >= 0)) { toast('Prezzo non valido', true); return; }
     if (!(await confirmDlg('Prezzo manuale ' + fmtEur(p) + '?', 'Conferma'))) return;
@@ -871,15 +913,16 @@ async function pagScheda(id) {
   const extraRighe = righe.filter((r) => r.extra), ricambi = righe.filter((r) => !r.extra);
 
   return h('div', { class: 'page' },
-    h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#schede'; } }, ic('back'), h('span', { text: 'Schede' })),
+    h('button', { type: 'button', class: 'back', onclick: () => {
+      if (sporco()) chiediUscita(() => { location.hash = '#schede'; }); else location.hash = '#schede';
+    } }, ic('back'), h('span', { text: 'Schede' })),
     h('div', { class: 'head-s' }, h('h2', { text: s.codice }),
       h('div', { class: 'sp', text: s.cliente_testo || '—' }),
       h('div', { class: 'badges' }, badgeStato(s.stato), badgePag(s.pagamento), s.data_apertura ? h('span', { class: 'muted small', text: fmtData(s.data_apertura) }) : null)),
     h('div', { class: 'card' },
       campo('Descrizione', descr), campo('Moto', moto),
       h('div', { class: 'two' }, campo('Ore', ore), campo('Tariffa €/h', tar)),
-      campo('Note', note),
-      btn('Salva', 'check', 'full', salva)),
+      campo('Note', note)),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Prezzo' }), s.prezzo_manuale ? h('span', { class: 'badge b-par', text: 'Manuale' }) : null),
     h('div', { class: 'card' },
       h('div', { class: 'extra-add' }, campo('Extra', extraV), campo('Prezzo €', extraP), ibtn('plus', 'Aggiungi extra', '', aggiungiExtra)),
@@ -901,7 +944,8 @@ async function pagScheda(id) {
         ibtn('trash', 'Rimuovi', 'dng sm', () => rimuovi(r)))) : h('div', { class: 'empty', text: '—' })),
     h('div', { class: 'row small muted' },
       h('span', { text: 'Materiali ' + fmtEur(s.costo_materiali) }),
-      h('span', { text: 'Guadagno ' + fmtEur(Number(s.prezzo_finale) - Number(s.costo_materiali)) })));
+      h('span', { text: 'Guadagno ' + fmtEur(Number(s.prezzo_finale) - Number(s.costo_materiali)) })),
+    h('div', { class: 'savebar' }, tastoSalva));
 }
 
 // Tendina di consultazione del magazzino per aggiungere un ricambio alla scheda
@@ -924,8 +968,8 @@ async function tendinaRicambio(scheda) {
       h('div', { class: 'row' }, h('span', { class: 'muted', text: [a.marchio, a.sezione].filter(Boolean).join(' · ') }),
         h('span', { class: 'pz', text: fmtNum(a.giacenza) + ' ' + a.unita })),
       h('div', { class: 'two' }, campo('Quantità', q), campo('Prezzo €', p)),
-      btn('Aggiungi', 'plus', 'full', go),
       h('button', { type: 'button', class: 'back', onclick: () => { sh.setTitle('Ricambio'); sh.set(sfoglia(lista, { onPick: scegli })); } }, ic('back'), h('span', { text: 'Magazzino' })));
+    sh.foot(btn('Aggiungi', 'plus', 'full', go));
     setTimeout(() => q.select(), 250);
   };
   sh.set(sfoglia(lista, { onPick: scegli }));
@@ -958,8 +1002,8 @@ function dettaglioArticolo(a, lista) {
     h('div', { class: 'row' }, h('span', { class: 'muted', text: a.codice }), h('span', { class: 'pz', text: fmtNum(a.giacenza) + ' ' + a.unita })),
     campo('Nome', nome), campo('Marchio', marchio), campo('Categoria', sez),
     h('div', { class: 'two' }, campo('Prezzo vendita €', prezzo),
-      h('div', { class: 'f' }, h('span', { class: 'small muted', text: 'Costo' }), h('div', { class: 'pz', text: fmtEur(a.costo_unit) }))),
-    btn('Salva', 'check', 'full', go));
+      h('div', { class: 'f' }, h('span', { class: 'small muted', text: 'Costo' }), h('div', { class: 'pz', text: fmtEur(a.costo_unit) }))));
+  sh.foot(btn('Salva', 'check', 'full', go));
 }
 
 function nuovoArticolo(lista) {
@@ -992,8 +1036,8 @@ function nuovoArticolo(lista) {
     h('div', { class: 'two' }, campo('Codice', codice), campo('Unità', unita)),
     campo('Nome', nome), campo('Categoria', sez), campo('Marchio', marchio),
     h('div', { class: 'two' }, campo('Costo €', costo), campo('Prezzo vendita €', prezzo)),
-    campo('Giacenza iniziale', giac),
-    btn('Aggiungi', 'plus', 'full', go));
+    campo('Giacenza iniziale', giac));
+  sh.foot(btn('Aggiungi', 'plus', 'full', go));
 }
 
 /* ------------------------------------------------------------------ percorsi e avvio */
@@ -1001,6 +1045,7 @@ const VOCI = [['riepilogo', 'Riepilogo', 'home'], ['schede', 'Schede', 'schede']
 
 async function route(mantieni) {
   const my = ++tok;
+  guardia = null;
   const parti = (location.hash || '#riepilogo').slice(1).split('/');
   const pag = VOCI.some((v) => v[0] === parti[0]) || parti[0] === 'movimenti' || parti[0] === 'contabilita' || parti[0] === 'fatture' ? parti[0] : 'riepilogo';
   const navOn = pag === 'movimenti' || pag === 'contabilita' || pag === 'fatture' ? 'riepilogo' : pag;
@@ -1037,6 +1082,19 @@ function startApp() {
     if (DEMO) $('demo-tag').hidden = false;
     else $('top').append(h('button', { type: 'button', class: 'btn sec ibtn sm', 'aria-label': 'Esci', onclick: () => sb.auth.signOut() }, ic('out')));
     window.addEventListener('hashchange', () => route());
+    // Barra in basso: se la scheda ha modifiche non salvate, chiede prima di uscire
+    $('nav').addEventListener('click', (e) => {
+      const a = e.target.closest('a');
+      if (!a || !guardia || !guardia.sporco()) return;
+      e.preventDefault();
+      chiediUscita(() => { location.hash = a.getAttribute('href'); });
+    });
+    // Tastiera aperta: l'area visibile si riduce, la barra del Salva resta raggiungibile
+    if (window.visualViewport) {
+      const vv = window.visualViewport;
+      const adatta = () => document.documentElement.style.setProperty('--vh', Math.round(vv.height) + 'px');
+      vv.addEventListener('resize', adatta); adatta();
+    }
   }
   route();
 }
