@@ -55,6 +55,7 @@ const ICONS = {
   undo: 'M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3',
   list: 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01',
   note: 'M6 3h9l4 4v14H6zM9 12h7M9 16h7',
+  fattura: 'M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6',
   cash: 'M3 7h18v10H3zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM6 12h.01M18 12h.01'
 };
 function ic(name) {
@@ -253,6 +254,22 @@ function realApi() {
       }
       return { entrate: round2(t.entrate), uscite: round2(t.uscite), prelievi: round2(t.prelievi) };
     },
+    // Fatture (sola lettura) + segna pagata
+    async fatture() {
+      return ok(await sb.from('lcr_fatture').select('id,fornitore,numero,data,totale,stato').order('data', { ascending: false }).order('id', { ascending: false }));
+    },
+    async fattura(id) {
+      const [f, r] = await Promise.all([
+        sb.from('lcr_fatture').select('*').eq('id', id).single(),
+        sb.from('lcr_fatture_righe').select('*').eq('fattura_id', id).order('id')
+      ]);
+      const righe = ok(r);
+      const ids = Array.from(new Set(righe.map((x) => x.scheda_id).filter(Boolean)));
+      const cod = {};
+      if (ids.length) ok(await sb.from('lcr_schede').select('id,codice').in('id', ids)).forEach((x) => { cod[x.id] = x.codice; });
+      return { fattura: ok(f), righe: righe.map((x) => Object.assign({}, x, { scheda_codice: x.scheda_id ? cod[x.scheda_id] || '' : '' })) };
+    },
+    async pagaFattura(id, metodo, data) { ok(await sb.rpc('lcr_paga_fattura', { p_fattura: id, p_metodo: metodo, p_data: data })); },
     async prelievo(importo, nota, data) { ok(await sb.rpc('lcr_prelievo', { p_importo: importo, p_nota: nota || '', p_data: data })); },
     async aggiungiLavoro(testo) { ok(await sb.from('lcr_lavori_da_fare').insert({ testo })); },
     async lavoroFatto(id, fatto) { ok(await sb.from('lcr_lavori_da_fare').update({ fatto }).eq('id', id)); },
@@ -323,6 +340,19 @@ function demoApi() {
   const lavori = [
     { id: 1, testo: 'Ordinare filtri olio', fatto: false, note: '' }, { id: 2, testo: 'Chiamare il fornitore pneumatici', fatto: false, note: '' },
     { id: 3, testo: 'Pulire il banco', fatto: true, note: '' }
+  ];
+  const fatture = [
+    { id: 1, fornitore: 'Ricambi Rossi Srl', numero: '2026/412', data: gg(5), imponibile: 87.7, iva: 19.3, totale: 107, stato: 'Da pagare', data_pagamento: null, metodo: '', note: '' },
+    { id: 2, fornitore: 'Moto Parts', numero: 'FT-88', data: gg(30), imponibile: 163.93, iva: 36.07, totale: 200, stato: 'Pagata', data_pagamento: gg(20), metodo: 'Bonifico', note: '' },
+    { id: 3, fornitore: 'Energia Spa', numero: '', data: null, imponibile: 79.43, iva: 17.47, totale: 96.9, stato: 'Pagata', data_pagamento: gg(15), metodo: 'Carta', note: 'Luce officina' }
+  ];
+  const fRighe = [
+    { id: 1, fattura_id: 1, descrizione: 'Olio motore 10W40', importo: 34.5, destinazione: 'magazzino', scheda_id: null },
+    { id: 2, fattura_id: 1, descrizione: 'Pastiglie freno', importo: 22, destinazione: 'scheda', scheda_id: 2 },
+    { id: 3, fattura_id: 1, descrizione: 'Filtro aria', importo: 18.5, destinazione: 'magazzino', scheda_id: null },
+    { id: 4, fattura_id: 1, descrizione: 'Guanti da lavoro', importo: 12, destinazione: 'personale', scheda_id: null },
+    { id: 5, fattura_id: 1, descrizione: 'Varie', importo: 20, destinazione: 'altro', scheda_id: null },
+    { id: 6, fattura_id: 2, descrizione: 'Kit catena', importo: 200, destinazione: 'scheda', scheda_id: 4 }
   ];
   const attesa = () => new Promise((r) => setTimeout(r, 120));
   const trova = (id) => schede.find((s) => s.id === id);
@@ -411,6 +441,16 @@ function demoApi() {
       const t = { entrate: 0, uscite: 0, prelievi: 0 };
       movFiltra(f).filter((m) => !m.annullato).forEach((m) => movSomma(t, m));
       return { entrate: round2(t.entrate), uscite: round2(t.uscite), prelievi: round2(t.prelievi) };
+    },
+    async fatture() { await attesa(); return fatture.map(copia).sort((a, b) => b.id - a.id); },
+    async fattura(id) {
+      await attesa();
+      return { fattura: copia(fatture.find((x) => x.id === id)),
+        righe: fRighe.filter((r) => r.fattura_id === id).map((r) => Object.assign({}, r, { scheda_codice: r.scheda_id ? trova(r.scheda_id).codice : '' })) };
+    },
+    async pagaFattura(id, metodo, data) {
+      await attesa();
+      Object.assign(fatture.find((x) => x.id === id), { stato: 'Pagata', metodo, data_pagamento: data });
     },
     async prelievo(importo, nota, data) {
       await attesa();
@@ -612,6 +652,7 @@ async function pagContabilita() {
       kpi('Guadagno del mese', r.guadagnoMese, 'big')),
     h('div', { class: 'grid2 acts' },
       btn('Movimenti', 'list', 'sec', () => { location.hash = '#movimenti'; }),
+      btn('Fatture', 'fattura', 'sec', () => { location.hash = '#fatture'; }),
       btn('Prelievo', 'cash', '', () => tendinaPrelievo())),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Entrate previste' })),
     h('div', { class: 'kpi' }, h('div', { class: 'l', text: r.entrateN + (r.entrateN === 1 ? ' scheda' : ' schede') }), h('div', { class: 'v', text: fmtEur(r.entratePreviste) })),
@@ -700,6 +741,64 @@ async function pagMovimenti(tipoIniz) {
     h('div', { class: 'sec-t' }, h('h2', { text: 'Movimenti' })),
     h('div', { class: 'bar' }, selTipo, selMese),
     tot, h('div', { class: 'gap' }), lista, altri);
+}
+
+/* ---- FATTURE (sola lettura + Segna pagata) */
+const badgeFatt = (st) => h('span', { class: 'badge ' + (st === 'Pagata' ? 'b-ok' : 'b-Da'), text: st });
+const DEST = { scheda: 'Scheda', magazzino: 'Magazzino', personale: 'Personale', altro: 'Altro' };
+const METODI = ['Contanti', 'PayPal', 'Carta', 'Bonifico', 'Altro'];
+
+async function pagFatture() {
+  const lista = await api.fatture();
+  const da = lista.filter((f) => f.stato !== 'Pagata'), pg = lista.filter((f) => f.stato === 'Pagata');
+  const card = (f) => h('button', { type: 'button', class: 'item', onclick: () => { location.hash = '#fatture/' + f.id; } },
+    h('div', { class: 'grow' }, h('div', { class: 't', text: f.fornitore || '—' }),
+      h('div', { class: 's', text: fmtData(f.data) || '—' }), h('div', { class: 'badges' }, badgeFatt(f.stato))),
+    h('div', { class: 'r', text: fmtEur(f.totale) }));
+  const gruppo = (t, l) => [h('div', { class: 'sec-t' }, h('h2', { text: t })), l.length ? l.map(card) : h('div', { class: 'empty', text: '—' })];
+  return h('div', { class: 'page' },
+    h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#contabilita'; } }, ic('back'), h('span', { text: 'Contabilità' })),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Fatture' })),
+    h('div', { class: 'kpi' }, h('div', { class: 'l', text: da.length + ' da pagare' }),
+      h('div', { class: 'v', text: fmtEur(da.reduce((t, f) => t + Number(f.totale), 0)) })),
+    h('div', { class: 'gap' }),
+    gruppo('Da pagare', da), gruppo('Pagate', pg));
+}
+
+async function pagFattura(id) {
+  const { fattura: f, righe } = await api.fattura(id);
+  const rr = (l, v) => h('div', { class: 'item static' }, h('div', { class: 'grow' }, h('div', { class: 's', text: l }), h('div', { class: 't', text: v })));
+  const paga = () => {
+    const sh = openSheet('Segna pagata');
+    const met = selezione(METODI, 'Contanti');
+    const data = h('input', { type: 'date', value: isoLocale(new Date()), 'aria-label': 'Data' });
+    let invio = false;
+    const go = async () => {
+      if (invio) return;
+      if (!data.value) { toast('Data mancante', true); return; }
+      invio = true;
+      const okk = await run(async () => { await api.pagaFattura(f.id, met.value, data.value); return true; });
+      invio = false;
+      if (okk) { sh.close(); toast('Pagata'); route(true); }
+    };
+    sh.set(campo('Metodo', met), campo('Data', data), btn('Conferma', 'check', 'full', go));
+  };
+  const voce = (r) => h('div', { class: 'item static' },
+    h('div', { class: 'grow' }, h('div', { class: 't', text: r.descrizione || '—' }),
+      h('div', { class: 'badges' }, h('span', { class: 'badge b-lav', text: DEST[r.destinazione] || 'Altro' }),
+        r.scheda_codice ? h('span', { class: 'badge b-mut', text: r.scheda_codice }) : null)),
+    h('div', { class: 'r', text: fmtEur(r.importo) }));
+  const pagata = f.stato === 'Pagata';
+  return h('div', { class: 'page' },
+    h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#fatture'; } }, ic('back'), h('span', { text: 'Fatture' })),
+    h('div', { class: 'sec-t' }, h('h2', { text: f.fornitore || '—' }), badgeFatt(f.stato)),
+    rr('Numero', f.numero || '—'), rr('Data', fmtData(f.data) || '—'),
+    h('div', { class: 'grid3' }, kpi('Imponibile', f.imponibile), kpi('IVA', f.iva), kpi('Totale', f.totale)),
+    pagata ? [h('div', { class: 'gap' }), rr('Pagata il', fmtData(f.data_pagamento) || '—'), rr('Metodo', f.metodo || '—')] : null,
+    f.note ? rr('Note', f.note) : null,
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Voci' })),
+    righe.length ? righe.map(voce) : h('div', { class: 'empty', text: '—' }),
+    pagata ? null : [h('div', { class: 'gap' }), btn('Segna pagata', 'check', 'full big-btn', paga)]);
 }
 
 function cardScheda(s) {
@@ -903,8 +1002,8 @@ const VOCI = [['riepilogo', 'Riepilogo', 'home'], ['schede', 'Schede', 'schede']
 async function route(mantieni) {
   const my = ++tok;
   const parti = (location.hash || '#riepilogo').slice(1).split('/');
-  const pag = VOCI.some((v) => v[0] === parti[0]) || parti[0] === 'movimenti' || parti[0] === 'contabilita' ? parti[0] : 'riepilogo';
-  const navOn = pag === 'movimenti' || pag === 'contabilita' ? 'riepilogo' : pag;
+  const pag = VOCI.some((v) => v[0] === parti[0]) || parti[0] === 'movimenti' || parti[0] === 'contabilita' || parti[0] === 'fatture' ? parti[0] : 'riepilogo';
+  const navOn = pag === 'movimenti' || pag === 'contabilita' || pag === 'fatture' ? 'riepilogo' : pag;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.p === navOn));
   const m = main();
   const y = m.scrollTop;
@@ -915,6 +1014,7 @@ async function route(mantieni) {
     if (pag === 'riepilogo') nodo = await pagRiepilogo();
     else if (pag === 'schede') nodo = parti[1] && /^\d+$/.test(parti[1]) ? await pagScheda(Number(parti[1])) : await pagSchede();
     else if (pag === 'contabilita') nodo = await pagContabilita();
+    else if (pag === 'fatture') nodo = parti[1] && /^\d+$/.test(parti[1]) ? await pagFattura(Number(parti[1])) : await pagFatture();
     else if (pag === 'movimenti') nodo = await pagMovimenti(parti[1]);
     else nodo = await pagMagazzino();
     if (my !== tok) return;
