@@ -103,7 +103,7 @@ function openSheet(title) {
     close: () => { const i = sheets.indexOf(api); if (i >= 0) sheets.splice(i, 1); ov.remove(); }
   };
   const panel = h('div', { class: 'sheet', role: 'dialog', 'aria-modal': 'true' },
-    h('div', { class: 'sheet-h' }, titleEl, ibtn('x', 'Chiudi', 'sec', api.close)), body, foot);
+    h('div', { class: 'sheet-h' }, titleEl, foot, ibtn('x', 'Chiudi', 'sec', api.close)), body);
   ov.append(panel);
   ov.addEventListener('click', (e) => { if (e.target === ov) api.close(); });
   $('layer').append(ov);
@@ -869,11 +869,10 @@ async function pagScheda(id) {
     if (okk) { guardia = null; toast('Salvato'); route(true); }
     return !!okk;
   };
-  const tastoSalva = btn('Salva', 'check', 'full', salva, { disabled: true });
+  const tastoSalva = btn('Salva', 'check', 'sm-save', salva, { hidden: true });
   const aggiorna = () => {
     const sp = sporco();
-    tastoSalva.disabled = !sp;
-    tastoSalva.classList.toggle('dirty', sp);
+    tastoSalva.hidden = !sp;
   };
   campi.forEach((c) => c.addEventListener('input', aggiorna));
   guardia = { sporco, salva };
@@ -913,9 +912,9 @@ async function pagScheda(id) {
   const extraRighe = righe.filter((r) => r.extra), ricambi = righe.filter((r) => !r.extra);
 
   return h('div', { class: 'page' },
-    h('button', { type: 'button', class: 'back', onclick: () => {
+    h('div', { class: 'topline' }, h('button', { type: 'button', class: 'back', onclick: () => {
       if (sporco()) chiediUscita(() => { location.hash = '#schede'; }); else location.hash = '#schede';
-    } }, ic('back'), h('span', { text: 'Schede' })),
+    } }, ic('back'), h('span', { text: 'Schede' })), tastoSalva),
     h('div', { class: 'head-s' }, h('h2', { text: s.codice }),
       h('div', { class: 'sp', text: s.cliente_testo || '—' }),
       h('div', { class: 'badges' }, badgeStato(s.stato), badgePag(s.pagamento), s.data_apertura ? h('span', { class: 'muted small', text: fmtData(s.data_apertura) }) : null)),
@@ -944,8 +943,7 @@ async function pagScheda(id) {
         ibtn('trash', 'Rimuovi', 'dng sm', () => rimuovi(r)))) : h('div', { class: 'empty', text: '—' })),
     h('div', { class: 'row small muted' },
       h('span', { text: 'Materiali ' + fmtEur(s.costo_materiali) }),
-      h('span', { text: 'Guadagno ' + fmtEur(Number(s.prezzo_finale) - Number(s.costo_materiali)) })),
-    h('div', { class: 'savebar' }, tastoSalva));
+      h('span', { text: 'Guadagno ' + fmtEur(Number(s.prezzo_finale) - Number(s.costo_materiali)) })));
 }
 
 // Tendina di consultazione del magazzino per aggiungere un ricambio alla scheda
@@ -1088,6 +1086,11 @@ function startApp() {
       if (!a || !guardia || !guardia.sporco()) return;
       e.preventDefault();
       chiediUscita(() => { location.hash = a.getAttribute('href'); });
+    });
+    // Campo in focus sempre visibile quando si apre la tastiera
+    document.addEventListener('focusin', (e) => {
+      const t = e.target;
+      if (t && /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) setTimeout(() => t.scrollIntoView({ block: 'center', behavior: 'smooth' }), 350);
     });
     // Tastiera aperta: l'area visibile si riduce, la barra del Salva resta raggiungibile
     if (window.visualViewport) {

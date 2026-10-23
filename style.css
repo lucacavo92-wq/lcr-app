@@ -186,13 +186,13 @@ label.f > span { display: block; margin-bottom: 5px; font-size: .85rem; font-wei
 /* Extra scheda: voce, prezzo, tasto + */
 .extra-add { display: grid; grid-template-columns: 1fr 7rem auto; gap: 8px; align-items: end; }
 
-/* Salva sempre visibile: barra fissa in fondo alla pagina scheda (sopra la nav) */
-.savebar { position: sticky; bottom: 0; z-index: 20; margin: 12px -16px -24px; padding: 10px 16px; background: var(--s1);
-  border-top: 1px solid var(--line); }
-.savebar .btn { min-height: 58px; font-size: 1.1rem; }
-.btn[disabled]:not(.dirty) { opacity: 1; background: var(--s2); color: var(--mut); border: 1.5px solid var(--line); }
-.btn.dirty { box-shadow: 0 0 0 3px rgba(63, 217, 192, .35); }
-/* Tasto di conferma fisso in fondo alle tendine */
-.sheet-f { flex: none; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--s1); }
-.sheet-b { padding-bottom: 14px; }
-@media (min-width: 900px) { .savebar { margin: 12px -24px -24px; padding: 10px 24px; } }
+/* Salva piccolo in alto: riga fissa della scheda e intestazione delle tendine */
+.topline { position: sticky; top: -16px; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin: -16px -16px 8px; padding: 8px 16px; background: var(--bg); }
+.topline .back { margin-bottom: 0; }
+.btn.sm-save, .sheet-f .btn { width: auto; min-height: 40px; padding: 0 14px; border-radius: 12px; font-size: .95rem; }
+.btn.sm-save svg, .sheet-f .btn svg { width: 20px; height: 20px; }
+.sheet-f { flex: none; margin-left: auto; }
+.sheet-h { justify-content: flex-start; }
+.sheet-h h3 { flex: 1; min-width: 0; }
+@media (min-width: 900px) { .topline { top: -24px; margin: -24px -24px 8px; padding: 8px 24px; } }
