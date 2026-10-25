@@ -170,6 +170,16 @@ function realApi() {
     try { await sb.from('lcr_registro_modifiche').insert({ operazione, dettagli: dettagli || '' }); } catch (e) { /* traccia non riuscita: non blocca */ }
   };
   const det = (o) => Object.keys(o).map((k) => k + '=' + o[k]).join('; ');
+  // Incassato/residuo per scheda (vista lcr_v_scheda_saldo)
+  const saldiMappa = async () => {
+    const m = {};
+    ok(await sb.from('lcr_v_scheda_saldo').select('scheda_id,incassato,residuo').range(0, 4999)).forEach((x) => { m[x.scheda_id] = x; });
+    return m;
+  };
+  const unisciSaldi = (l, m) => l.map((s) => {
+    const x = m[s.id];
+    return Object.assign({}, s, { incassato: x ? Number(x.incassato) || 0 : 0, residuo: x ? Number(x.residuo) : Number(s.prezzo_finale) });
+  });
 
   // Guadagno del mese = somma di (prezzo_finale - costo_materiali) delle schede il cui incasso
   // (movimento contabile Entrata non annullato, con scheda_id) cade nel mese corrente.
@@ -194,31 +204,37 @@ function realApi() {
         sb.from('lcr_schede').select('id,codice,cliente_testo,moto_testo,prezzo_finale,stato,pagamento').neq('stato', 'Completato').order('id', { ascending: false }),
         sb.from('lcr_lavori_da_fare').select('*').order('fatto', { ascending: true }).order('id', { ascending: false })
       ]);
-      return { schedeAperte: ok(aperte), lavori: ok(lavori) };
+      return { schedeAperte: unisciSaldi(ok(aperte), await saldiMappa()), lavori: ok(lavori) };
     },
     // Contabilita': tutto il blocco soldi
     async riepilogo() {
       const [v, daInc, guad] = await Promise.all([
         sb.from('lcr_v_riepilogo').select('*').single(),
-        sb.from('lcr_schede').select('prezzo_finale').neq('pagamento', 'Incassato'),
+        sb.from('lcr_schede').select('id').neq('pagamento', 'Incassato'),
         guadagnoMese()
       ]);
       const r = ok(v), di = ok(daInc);
       return {
         cassa: Number(r.cassa_teorica), daIncassare: Number(r.da_incassare), daPagare: Number(r.da_pagare_fornitori),
         magazzino: Number(r.valore_magazzino), guadagnoMese: guad, prelievi: Number(r.prelievi) || 0,
-        entratePreviste: round2(di.reduce((t, s) => t + Number(s.prezzo_finale), 0)), entrateN: di.length
+        entratePreviste: Number(r.da_incassare), entrateN: di.length
       };
     },
     async schede() {
-      return ok(await sb.from('lcr_schede').select('id,codice,cliente_testo,moto_testo,descrizione,prezzo_finale,stato,pagamento').order('id', { ascending: false }));
+      const l = ok(await sb.from('lcr_schede').select('id,codice,cliente_testo,moto_testo,descrizione,prezzo_finale,stato,pagamento').order('id', { ascending: false }));
+      return unisciSaldi(l, await saldiMappa());
     },
     async scheda(id) {
-      const [s, r] = await Promise.all([
+      const [s, r, sal] = await Promise.all([
         sb.from('lcr_schede').select('*').eq('id', id).single(),
-        sb.from('lcr_righe_scheda').select('*').eq('scheda_id', id).order('id')
+        sb.from('lcr_righe_scheda').select('*').eq('scheda_id', id).order('id'),
+        sb.from('lcr_v_scheda_saldo').select('scheda_id,incassato,residuo').eq('scheda_id', id)
       ]);
-      return { scheda: ok(s), righe: ok(r) };
+      const m = {}; (ok(sal) || []).forEach((x) => { m[x.scheda_id] = x; });
+      return { scheda: unisciSaldi([ok(s)], m)[0], righe: ok(r) };
+    },
+    async incassa(id, metodo, data, importo) {
+      ok(await sb.rpc('lcr_incassa_scheda', { p_scheda: id, p_metodo: metodo, p_data: data, p_importo: importo }));
     },
     async updateScheda(id, campi, codice) {
       ok(await sb.from('lcr_schede').update(campi).eq('id', id));
@@ -277,7 +293,8 @@ function realApi() {
     async prelievo(importo, nota, data, perCosa) { ok(await sb.rpc('lcr_prelievo', { p_importo: importo, p_nota: nota || '', p_data: data, p_per_cosa: perCosa || 'altro' })); },
     // Da incassare: schede non incassate, dall'ultima
     async schedeDaIncassare() {
-      return ok(await sb.from('lcr_schede').select('id,codice,cliente_testo,moto_testo,prezzo_finale,stato,pagamento').neq('pagamento', 'Incassato').order('id', { ascending: false }));
+      const l = ok(await sb.from('lcr_schede').select('id,codice,cliente_testo,moto_testo,prezzo_finale,stato,pagamento').neq('pagamento', 'Incassato').order('id', { ascending: false }));
+      return unisciSaldi(l, await saldiMappa());
     },
     // Da pagare: uscite non annullate con stato 'Da pagare' (+ dati della fattura collegata)
     async movimentiDaPagare() {
@@ -333,13 +350,14 @@ function demoApi() {
   const S = (id, cli, moto, desc, ore, stato, pag, extra) =>
     Object.assign({ id, codice: 'LAV-' + String(id).padStart(4, '0'), cliente_testo: cli, moto_testo: moto, descrizione: desc, ore, tariffa: 20,
       costo_materiali: 0, prezzo_finale: 0, prezzo_manuale: false, stato, pagamento: pag, metodo_pagamento: '',
-      data_apertura: oggi, data_chiusura: null, note: '' }, extra || {});
+      data_apertura: oggi, data_chiusura: null, note: '', incassato: 0 }, extra || {});
+  const residuoDi = (s) => (s.pagamento === 'Incassato' ? 0 : round2(s.prezzo_finale - (s.incassato || 0)));
   const schede = [
     S(1, clienti[0], 'Honda CBR 600', 'Tagliando completo', 2.5, 'Completato', 'Incassato', { metodo_pagamento: 'Contanti' }),
     S(2, clienti[1], 'Yamaha MT-07', 'Cambio pastiglie e olio', 1.5, 'In lavorazione', 'Da incassare'),
     S(3, clienti[2], 'KTM EXC 250', 'Revisione forcella', 4, 'Aperto', 'Da incassare', { note: 'Cliente passa sabato' }),
     S(4, clienti[3], 'Ducati Monster', 'Kit catena', 2, 'Completato', 'Da incassare'),
-    S(5, clienti[4], 'Suzuki GSX-R 750', 'Lavaggio e controllo', 1, 'Aperto', 'Parziale', { prezzo_manuale: true, prezzo_finale: 30 })
+    S(5, clienti[4], 'Suzuki GSX-R 750', 'Lavaggio e controllo', 1, 'Aperto', 'Parziale', { prezzo_manuale: true, prezzo_finale: 30, incassato: 10 })
   ];
   let righe = [];
   let nRiga = 1, nArt = 17, nLav = 4;
@@ -415,29 +433,46 @@ function demoApi() {
   ricalc(3);
 
   const copia = (o) => Object.assign({}, o);
+  // Scheda con incassato/residuo calcolati (come la vista lcr_v_scheda_saldo)
+  const cs = (s) => Object.assign({}, s, { incassato: s.pagamento === 'Incassato' ? s.prezzo_finale : (s.incassato || 0), residuo: residuoDi(s) });
   return {
     async riepilogo() {
       await attesa();
       const di = schede.filter((s) => s.pagamento !== 'Incassato');
-      const entrate = schede.filter((s) => s.pagamento === 'Incassato').reduce((t, s) => t + s.prezzo_finale, 0);
+      const entrate = schede.reduce((t, s) => t + (s.pagamento === 'Incassato' ? s.prezzo_finale : (s.incassato || 0)), 0);
       const ym = oggi.slice(0, 7);
       const ids = Array.from(new Set(movimenti.filter((m) => m.tipo === 'Entrata' && !m.annullato && m.scheda_id && m.data.slice(0, 7) === ym).map((m) => m.scheda_id)));
       return {
-        cassa: round2(1000 + entrate - 312.4 - prelieviTot()), prelievi: prelieviTot(), daIncassare: round2(di.reduce((t, s) => t + s.prezzo_finale, 0)), daPagare: daPagareTot(),
+        cassa: round2(1000 + entrate - 312.4 - prelieviTot()), prelievi: prelieviTot(), daIncassare: round2(di.reduce((t, s) => t + residuoDi(s), 0)), daPagare: daPagareTot(),
         magazzino: round2(articoli.reduce((t, a) => t + a.giacenza * a.costo_unit, 0)),
         guadagnoMese: round2(ids.reduce((t, i) => t + trova(i).prezzo_finale - trova(i).costo_materiali, 0)),
-        entratePreviste: round2(di.reduce((t, s) => t + s.prezzo_finale, 0)), entrateN: di.length
+        entratePreviste: round2(di.reduce((t, s) => t + residuoDi(s), 0)), entrateN: di.length
       };
     },
     async home() {
       await attesa();
       return {
-        schedeAperte: schede.filter((s) => s.stato !== 'Completato').sort((a, b) => b.id - a.id).map(copia),
+        schedeAperte: schede.filter((s) => s.stato !== 'Completato').sort((a, b) => b.id - a.id).map(cs),
         lavori: lavori.slice().sort((a, b) => (a.fatto - b.fatto) || (b.id - a.id)).map(copia)
       };
     },
-    async schede() { await attesa(); return schede.slice().sort((a, b) => b.id - a.id).map(copia); },
-    async scheda(id) { await attesa(); return { scheda: copia(trova(id)), righe: righe.filter((r) => r.scheda_id === id).map(copia) }; },
+    async schede() { await attesa(); return schede.slice().sort((a, b) => b.id - a.id).map(cs); },
+    async scheda(id) { await attesa(); return { scheda: cs(trova(id)), righe: righe.filter((r) => r.scheda_id === id).map(copia) }; },
+    // Stesse regole della RPC lcr_incassa_scheda
+    async incassa(id, metodo, data, importo) {
+      await attesa();
+      const s = trova(id);
+      if (s.pagamento === 'Incassato') throw { message: 'Scheda gia\' incassata' };
+      const res = residuoDi(s);
+      const imp = importo == null ? res : round2(importo);
+      if (!(imp > 0)) throw { message: 'Importo non valido' };
+      if (imp > res) throw { message: 'Importo superiore al residuo (' + res + ')' };
+      s.incassato = round2((s.incassato || 0) + imp);
+      s.metodo_pagamento = metodo;
+      if (imp === res) { s.pagamento = 'Incassato'; s.stato = 'Completato'; s.data_chiusura = data || oggi; }
+      else s.pagamento = 'Parziale';
+      movimenti.push(M(nMov++, 0, 'Entrata', 'Lavori', 'Incasso ' + s.codice, s.cliente_testo, imp, { scheda_id: id, data: data || oggi }));
+    },
     async updateScheda(id, campi) { await attesa(); Object.assign(trova(id), campi); },
     async ricalcola(id) { await attesa(); ricalc(id); },
     async aggiungiRiga(id, a, q, p) {
@@ -501,7 +536,7 @@ function demoApi() {
     },
     async schedeDaIncassare() {
       await attesa();
-      return schede.filter((s) => s.pagamento !== 'Incassato').sort((a, b) => b.id - a.id).map(copia);
+      return schede.filter((s) => s.pagamento !== 'Incassato').sort((a, b) => b.id - a.id).map(cs);
     },
     async movimentiDaPagare() {
       await attesa();
@@ -728,7 +763,7 @@ const backA = (hash, label) => h('button', { type: 'button', class: 'back', oncl
 /* ---- CONTABILITA' > Da incassare: schede non incassate */
 async function pagDaIncassare() {
   const l = await api.schedeDaIncassare();
-  const tot = round2(l.reduce((t, s) => t + (Number(s.prezzo_finale) || 0), 0));
+  const tot = round2(l.reduce((t, s) => t + (s.residuo != null ? Number(s.residuo) : Number(s.prezzo_finale)) || 0, 0));
   return h('div', { class: 'page' }, backA('#contabilita', 'Contabilità'),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Da incassare' })),
     h('div', { class: 'kpi' }, h('div', { class: 'l', text: l.length + (l.length === 1 ? ' scheda' : ' schede') }), h('div', { class: 'v', text: fmtEur(tot) })),
@@ -974,6 +1009,7 @@ async function pagMovimenti(tipoIniz) {
 const badgeFatt = (st) => h('span', { class: 'badge ' + (st === 'Pagata' ? 'b-ok' : 'b-Da'), text: st });
 const DEST = { scheda: 'Scheda', magazzino: 'Magazzino', personale: 'Personale', altro: 'Altro' };
 const METODI = ['Contanti', 'PayPal', 'Carta', 'Bonifico', 'Altro'];
+const METODI_INCASSO = ['Contanti', 'PayPal', 'Bonifico', 'Altro'];
 
 async function pagFatture() {
   const lista = await api.fatture();
@@ -1030,11 +1066,13 @@ async function pagFattura(id) {
 }
 
 function cardScheda(s) {
+  const parz = s.pagamento !== 'Incassato' && Number(s.incassato) > 0 && s.residuo != null;
   return h('button', { type: 'button', class: 'item', onclick: () => { location.hash = '#schede/' + s.id; } },
     h('div', { class: 'grow' }, h('div', { class: 't', text: s.codice + ' · ' + (s.cliente_testo || '—') }),
       h('div', { class: 's', text: s.moto_testo || '' }),
       (s.stato || s.pagamento) ? h('div', { class: 'badges' }, s.stato ? badgeStato(s.stato) : null, s.pagamento ? badgePag(s.pagamento) : null) : null),
-    h('div', { class: 'r', text: fmtEur(s.prezzo_finale) }));
+    parz ? h('div', { class: 'r' }, h('div', { text: 'Residuo ' + fmtEur(s.residuo) }), h('div', { class: 's', text: 'di ' + fmtEur(s.prezzo_finale) }))
+      : h('div', { class: 'r', text: fmtEur(s.prezzo_finale) }));
 }
 
 /* ---- 2. SCHEDE */
@@ -1118,6 +1156,29 @@ async function pagScheda(id) {
     if (okk) { toast('Rimosso'); route(true); }
   };
   const extraRighe = righe.filter((r) => r.extra), ricambi = righe.filter((r) => !r.extra);
+  const incassabile = s.pagamento !== 'Incassato';
+  const residuo = s.residuo != null ? Number(s.residuo) : Number(s.prezzo_finale);
+  const incassa = () => {
+    const sh = openSheet('Incassa');
+    const imp = ninp(residuo); imp.setAttribute('aria-label', 'Importo €');
+    const met = selezione(METODI_INCASSO, 'Contanti');
+    const data = h('input', { type: 'date', value: isoLocale(new Date()), 'aria-label': 'Data' });
+    let invio = false;
+    const go = async () => {
+      if (invio) return;
+      const v = parseNum(imp.value);
+      if (!(v > 0)) { toast('Importo non valido', true); return; }
+      if (v > residuo + 0.001) { toast('Importo superiore al residuo', true); return; }
+      if (!data.value) { toast('Data mancante', true); return; }
+      invio = true;
+      const okk = await run(async () => { await api.incassa(s.id, met.value, data.value, round2(v)); return true; });
+      invio = false;
+      if (okk) { sh.close(); toast('Incassato'); route(true); }
+    };
+    sh.set(campo('Importo €', imp), campo('Metodo', met), campo('Data', data));
+    sh.foot(btn('Conferma', 'check', 'full', go));
+    setTimeout(() => imp.select(), 250);
+  };
 
   return h('div', { class: 'page' },
     h('div', { class: 'topline' }, h('button', { type: 'button', class: 'back', onclick: () => {
@@ -1126,6 +1187,9 @@ async function pagScheda(id) {
     h('div', { class: 'head-s' }, h('h2', { text: s.codice }),
       h('div', { class: 'sp', text: s.cliente_testo || '—' }),
       h('div', { class: 'badges' }, badgeStato(s.stato), badgePag(s.pagamento), s.data_apertura ? h('span', { class: 'muted small', text: fmtData(s.data_apertura) }) : null)),
+    Number(s.incassato) > 0 || incassabile ? h('div', { class: 'card' },
+      Number(s.incassato) > 0 ? h('div', { class: 'row' }, h('span', { text: 'Incassato ' + fmtEur(s.incassato) }), h('span', { text: 'Residuo ' + fmtEur(residuo) })) : null,
+      incassabile ? btn('Incassa', 'cash', 'full', incassa) : null) : null,
     h('div', { class: 'card' },
       campo('Descrizione', descr), campo('Moto', moto),
       h('div', { class: 'two' }, campo('Ore', ore), campo('Tariffa €/h', tar)),
