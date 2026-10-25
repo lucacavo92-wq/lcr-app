@@ -224,6 +224,10 @@ function realApi() {
       const l = ok(await sb.from('lcr_schede').select('id,codice,cliente_testo,moto_testo,descrizione,prezzo_finale,stato,pagamento').order('id', { ascending: false }));
       return unisciSaldi(l, await saldiMappa());
     },
+    async clienti() { return ok(await sb.from('lcr_clienti').select('id,nome').order('nome').range(0, 4999)); },
+    async nuovaScheda(clienteId, clienteTesto, moto, descrizione) {
+      return ok(await sb.rpc('lcr_nuova_scheda', { p_cliente_id: clienteId, p_cliente_testo: clienteTesto || '', p_moto: moto || '', p_descrizione: descrizione || '' }));
+    },
     async scheda(id) {
       const [s, r, sal] = await Promise.all([
         sb.from('lcr_schede').select('*').eq('id', id).single(),
@@ -457,6 +461,15 @@ function demoApi() {
       };
     },
     async schede() { await attesa(); return schede.slice().sort((a, b) => b.id - a.id).map(cs); },
+    async clienti() { await attesa(); return clienti.map((nome, i) => ({ id: i + 1, nome })); },
+    async nuovaScheda(clienteId, clienteTesto, moto, descrizione) {
+      await attesa();
+      const nome = clienteId ? clienti[clienteId - 1] : String(clienteTesto || '').trim();
+      if (!nome) throw new Error('Cliente mancante');
+      const id = schede.reduce((m, x) => Math.max(m, x.id), 0) + 1;
+      schede.push(S(id, nome, moto || '', descrizione || '', 0, 'Aperto', 'Da incassare'));
+      return id;
+    },
     async scheda(id) { await attesa(); return { scheda: cs(trova(id)), righe: righe.filter((r) => r.scheda_id === id).map(copia) }; },
     // Stesse regole della RPC lcr_incassa_scheda
     async incassa(id, metodo, data, importo) {
@@ -1078,8 +1091,48 @@ function cardScheda(s) {
 /* ---- 2. SCHEDE */
 async function pagSchede() {
   const l = await api.schede();
+  const out = h('div', { class: 'list' });
+  let q = '';
+  function disegna() {
+    const t = q.trim().toLowerCase();
+    const v = l.filter((s) => !t || [s.codice, s.cliente_testo, s.moto_testo, s.descrizione].join(' ').toLowerCase().indexOf(t) >= 0);
+    out.replaceChildren(...(v.length ? v.map((s) => cardScheda(Object.assign({}, s))) : [h('div', { class: 'empty', text: '—' })]));
+  }
+  const src = h('input', { type: 'search', placeholder: 'Cerca', 'aria-label': 'Cerca', autocomplete: 'off' });
+  src.addEventListener('input', () => { q = src.value; disegna(); });
+  disegna();
   return h('div', { class: 'page' },
-    l.length ? l.map((s) => cardScheda(Object.assign({}, s))) : h('div', { class: 'empty', text: '—' }));
+    btn('Nuova', 'plus', 'full', () => tendinaNuovaScheda()),
+    h('div', { class: 'gap' }),
+    h('div', { class: 'bar' }, h('div', { class: 'src' }, ic('search'), src)),
+    out);
+}
+
+// Nuova scheda: cliente esistente o nuovo, moto, lavoro
+async function tendinaNuovaScheda() {
+  const sh = openSheet('Nuova scheda');
+  sh.set(h('div', { class: 'empty', text: '…' }));
+  const clienti = await run(() => api.clienti());
+  if (!clienti) { sh.close(); return; }
+  const cli = h('select', { 'aria-label': 'Cliente' }, h('option', { value: '', text: 'Nuovo cliente' }),
+    clienti.map((c) => h('option', { value: String(c.id), text: c.nome })));
+  const nuovo = tinp('', { maxlength: '120', 'aria-label': 'Nuovo cliente' });
+  const nuovoF = campo('Nuovo cliente', nuovo);
+  const moto = tinp('', { maxlength: '120', 'aria-label': 'Moto' });
+  const lavoro = tinp('', { maxlength: '300', 'aria-label': 'Lavoro' });
+  cli.addEventListener('change', () => { nuovoF.hidden = cli.value !== ''; });
+  let invio = false;
+  const go = async () => {
+    if (invio) return;
+    const id = cli.value ? Number(cli.value) : null;
+    if (!id && !nuovo.value.trim()) { toast('Cliente mancante', true); return; }
+    invio = true;
+    const nid = await run(() => api.nuovaScheda(id, id ? '' : nuovo.value.trim(), moto.value.trim(), lavoro.value.trim()));
+    invio = false;
+    if (nid != null) { sh.close(); toast('Scheda creata'); location.hash = '#schede/' + nid; }
+  };
+  sh.set(campo('Cliente', cli), nuovoF, campo('Moto', moto), campo('Lavoro', lavoro));
+  sh.foot(btn('Conferma', 'check', 'full', go));
 }
 
 async function pagScheda(id) {
