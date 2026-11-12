@@ -57,6 +57,7 @@ const ICONS = {
   note: 'M6 3h9l4 4v14H6zM9 12h7M9 16h7',
   fattura: 'M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6',
   cash: 'M3 7h18v10H3zM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM6 12h.01M18 12h.01',
+  chart: 'M4 20V10M10 20V4M16 20v-8M22 20H2',
   user: 'M12 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4 21c0-4.4 3.6-7 8-7s8 2.6 8 7'
 };
 function ic(name) {
@@ -277,6 +278,17 @@ function realApi() {
         if (b.length < 1000) break;
       }
       return { entrate: round2(t.entrate), uscite: round2(t.uscite), prelievi: round2(t.prelievi) };
+    },
+    // Andamento: tutti i movimenti non annullati (solo lettura)
+    async movimentiAndamento() {
+      let r = [];
+      for (let da = 0; ; da += 1000) {
+        const b = ok(await sb.from('lcr_movimenti_contabili').select('data,tipo,categoria,controparte,totale').eq('annullato', false)
+          .order('id').range(da, da + 999));
+        r = r.concat(b);
+        if (b.length < 1000) break;
+      }
+      return r;
     },
     // Fatture (sola lettura) + segna pagata
     async fatture() {
@@ -531,6 +543,7 @@ function demoApi() {
       movFiltra(f).filter((m) => !m.annullato).forEach((m) => movSomma(t, m));
       return { entrate: round2(t.entrate), uscite: round2(t.uscite), prelievi: round2(t.prelievi) };
     },
+    async movimentiAndamento() { await attesa(); return movimenti.filter((m) => !m.annullato).map(copia); },
     async fatture() { await attesa(); return fatture.map(copia).sort((a, b) => b.id - a.id); },
     async fattura(id) {
       await attesa();
@@ -926,6 +939,7 @@ async function pagContabilita() {
     h('div', { class: 'grid2 acts' },
       btn('Movimenti', 'list', 'sec', () => { location.hash = '#movimenti'; }),
       btn('Fatture', 'fattura', 'sec', () => { location.hash = '#fatture'; }),
+      btn('Andamento', 'chart', 'sec', () => { location.hash = '#andamento'; }),
       btn('Prelievo', 'cash', '', () => tendinaPrelievo())),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Entrate previste' })),
     h('div', { class: 'kpi' }, h('div', { class: 'l', text: r.entrateN + (r.entrateN === 1 ? ' scheda' : ' schede') }), h('div', { class: 'v', text: fmtEur(r.entratePreviste) })),
@@ -1016,6 +1030,131 @@ async function pagMovimenti(tipoIniz) {
     h('div', { class: 'sec-t' }, h('h2', { text: 'Movimenti' })),
     h('div', { class: 'bar' }, selTipo, selMese),
     tot, h('div', { class: 'gap' }), lista, altri);
+}
+
+/* ---- ANDAMENTO (grafico mensile, sola lettura) */
+const SVGNS = 'http://www.w3.org/2000/svg';
+function sv(tag, a, text) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in (a || {})) e.setAttribute(k, a[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+const MESI_BREVI = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+const fmtCompatto = (n) => { const a = Math.abs(n); return (n < 0 ? '−' : '') + (a >= 1000 ? (Math.round(a / 100) / 10).toString().replace('.', ',') + 'k' : String(Math.round(a))); };
+async function pagAndamento() {
+  const dati = await api.movimentiAndamento();
+  const SER = [['entrate', 'Entrate', 'c-ent'], ['uscite', 'Uscite', 'c-usc'], ['prelievi', 'Prelievi', 'c-pre'], ['saldo', 'Saldo', 'c-sal']];
+  const st = { tipo: 'tutti', cat: '', cp: '', da: '', a: '', serie: { entrate: true, uscite: true, prelievi: true, saldo: true }, sel: '' };
+  const uniq = (k) => Array.from(new Set(dati.map((m) => m[k]).filter(Boolean))).sort(coll.compare);
+  const mesiTutti = Array.from(new Set(dati.map((m) => String(m.data).slice(0, 7)).filter((x) => /^\d{4}-\d{2}$/.test(x)))).sort();
+  const nomeMese = (ym) => MESI_BREVI[Number(ym.slice(5)) - 1] + ' ' + ym.slice(2, 4);
+  const sel = (label, opts, cur, on) => {
+    const e = h('select', { 'aria-label': label }, opts.map((o) => h('option', { value: o[0], text: o[1] })));
+    e.value = cur; e.addEventListener('change', () => on(e.value)); return e;
+  };
+  const opzMesi = [['', 'Tutti']].concat(mesiTutti.map((m) => [m, nomeMese(m)]));
+  const grafico = h('div', { class: 'chart' });
+  const dettaglio = h('div', {});
+  const chips = h('div', { class: 'chips' });
+  const calcola = () => {
+    const per = {};
+    dati.forEach((m) => {
+      const ym = String(m.data).slice(0, 7);
+      if (!/^\d{4}-\d{2}$/.test(ym)) return;
+      if (st.da && ym < st.da) return;
+      if (st.a && ym > st.a) return;
+      if (st.cat && m.categoria !== st.cat) return;
+      if (st.cp && m.controparte !== st.cp) return;
+      const prel = isPrelievo(m), ent = m.tipo === 'Entrata';
+      if (st.tipo === 'entrate' && !ent) return;
+      if (st.tipo === 'uscite' && (ent || prel)) return;
+      if (st.tipo === 'prelievi' && !prel) return;
+      const o = per[ym] || (per[ym] = { ym, entrate: 0, uscite: 0, prelievi: 0 });
+      const v = Number(m.totale) || 0;
+      if (prel) o.prelievi += v; else if (ent) o.entrate += v; else o.uscite += v;
+    });
+    // mesi consecutivi (anche vuoti) dal primo all'ultimo
+    const ks = Object.keys(per).sort();
+    const out = [];
+    if (ks.length) {
+      let [y, m] = ks[0].split('-').map(Number);
+      const fine = ks[ks.length - 1];
+      for (;;) {
+        const ym = y + '-' + pad(m);
+        const o = per[ym] || { ym, entrate: 0, uscite: 0, prelievi: 0 };
+        o.saldo = round2(o.entrate - o.uscite - o.prelievi);
+        out.push(o);
+        if (ym >= fine) break;
+        if (++m > 12) { m = 1; y++; }
+      }
+    }
+    return out;
+  };
+  const disegna = () => {
+    const mesi = calcola();
+    chips.replaceChildren(...SER.map((s) => h('button', { type: 'button', class: 'chip ' + s[2] + (st.serie[s[0]] ? ' on' : ''),
+      'aria-pressed': st.serie[s[0]] ? 'true' : 'false', text: s[1], onclick: () => { st.serie[s[0]] = !st.serie[s[0]]; disegna(); } })));
+    if (!mesi.length) { grafico.replaceChildren(h('div', { class: 'empty', text: 'Nessun movimento' })); dettaglio.replaceChildren(); return; }
+    const att = SER.filter((s) => st.serie[s[0]]).map((s) => s[0]);
+    const barre = att.filter((k) => k !== 'saldo');
+    let mx = 0, mn = 0;
+    mesi.forEach((o) => att.forEach((k) => { mx = Math.max(mx, o[k]); mn = Math.min(mn, o[k]); }));
+    if (mx === mn) mx = mn + 1;
+    const W = Math.max(320, mesi.length * 46 + 50), H = 230, L = 40, T = 12, B = 28, ph = H - T - B;
+    const y = (v) => T + (mx - v) / (mx - mn) * ph;
+    const svg = sv('svg', { viewBox: '0 0 ' + W + ' ' + H, width: W, height: H, role: 'img', 'aria-label': 'Andamento mensile' });
+    // griglia: 4 livelli
+    for (let i = 0; i <= 4; i++) {
+      const v = mn + (mx - mn) * i / 4;
+      svg.append(sv('line', { x1: L, x2: W, y1: y(v), y2: y(v), class: 'gr' }), sv('text', { x: L - 4, y: y(v) + 3, class: 'tk', 'text-anchor': 'end' }, fmtCompatto(v)));
+    }
+    svg.append(sv('line', { x1: L, x2: W, y1: y(0), y2: y(0), class: 'z' }));
+    const cw = (W - L) / mesi.length, bw = Math.max(5, Math.min(16, (cw - 8) / Math.max(1, barre.length)));
+    const pts = [];
+    mesi.forEach((o, i) => {
+      const cx = L + cw * i + cw / 2;
+      const g = sv('g', {});
+      if (st.sel === o.ym) g.append(sv('rect', { x: L + cw * i, y: T, width: cw, height: ph, class: 'selm' }));
+      barre.forEach((k, j) => {
+        const x = cx - bw * barre.length / 2 + bw * j, y0 = y(0), y1 = y(o[k]);
+        g.append(sv('rect', { x, y: Math.min(y0, y1), width: bw - 1, height: Math.max(1, Math.abs(y0 - y1)), class: 'b-' + k }));
+      });
+      g.append(sv('text', { x: cx, y: H - 10, class: 'tk', 'text-anchor': 'middle' }, nomeMese(o.ym)));
+      g.append(sv('rect', { x: L + cw * i, y: T, width: cw, height: H - T, class: 'hit', 'data-ym': o.ym }));
+      svg.append(g);
+      pts.push(cx + ',' + y(o.saldo));
+    });
+    if (st.serie.saldo) {
+      svg.append(sv('polyline', { points: pts.join(' '), class: 'l-saldo' }));
+      pts.forEach((p) => { const q = p.split(','); svg.append(sv('circle', { cx: q[0], cy: q[1], r: 3, class: 'p-saldo' })); });
+    }
+    svg.addEventListener('click', (e) => { const ym = e.target.getAttribute && e.target.getAttribute('data-ym'); if (ym) { st.sel = st.sel === ym ? '' : ym; disegna(); } });
+    const wrap = h('div', { class: 'chart-sc' }, svg);
+    grafico.replaceChildren(wrap);
+    wrap.scrollLeft = wrap.scrollWidth; // mesi piu' recenti a destra
+    const tot = { entrate: 0, uscite: 0, prelievi: 0 };
+    mesi.forEach((o) => { tot.entrate += o.entrate; tot.uscite += o.uscite; tot.prelievi += o.prelievi; });
+    const k = (l, v, c) => h('div', { class: 'kpi sm' }, h('div', { class: 'l', text: l }), h('div', { class: 'v ' + (c || ''), text: fmtEur(round2(v)) }));
+    const o = st.sel ? mesi.find((x) => x.ym === st.sel) : null;
+    dettaglio.replaceChildren(
+      h('div', { class: 'sec-t' }, h('h2', { text: o ? nomeMese(o.ym) : 'Totale periodo' })),
+      h('div', { class: 'grid2' },
+        k('Entrate', o ? o.entrate : tot.entrate, 'pos'), k('Uscite', o ? o.uscite : tot.uscite, 'out'),
+        k('Prelievi', o ? o.prelievi : tot.prelievi, 'out'), k('Saldo', o ? o.saldo : tot.entrate - tot.uscite - tot.prelievi)));
+  };
+  const re = (fn) => (v) => { fn(v); st.sel = ''; disegna(); };
+  const filtri = h('div', { class: 'bar' },
+    sel('Tipo', [['tutti', 'Tutti i tipi'], ['entrate', 'Entrate'], ['uscite', 'Uscite'], ['prelievi', 'Prelievi']], st.tipo, re((v) => { st.tipo = v; })),
+    sel('Categoria', [['', 'Tutte le categorie']].concat(uniq('categoria').map((c) => [c, c])), '', re((v) => { st.cat = v; })),
+    h('div', { class: 'full' }, sel('Cliente o fornitore', [['', 'Tutti i clienti/fornitori']].concat(uniq('controparte').map((c) => [c, c])), '', re((v) => { st.cp = v; }))),
+    sel('Da mese', [['', 'Dal primo']].concat(opzMesi.slice(1)), '', re((v) => { st.da = v; })),
+    sel('A mese', [['', 'All\'ultimo']].concat(opzMesi.slice(1)), '', re((v) => { st.a = v; })));
+  disegna();
+  return h('div', { class: 'page' },
+    h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#contabilita'; } }, ic('back'), h('span', { text: 'Contabilità' })),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Andamento' })),
+    filtri, chips, grafico, dettaglio);
 }
 
 /* ---- FATTURE (sola lettura + Segna pagata) */
@@ -1371,8 +1510,8 @@ async function route(mantieni) {
   const my = ++tok;
   guardia = null;
   const parti = (location.hash || '#riepilogo').slice(1).split('/');
-  const pag = VOCI.some((v) => v[0] === parti[0]) || parti[0] === 'movimenti' || parti[0] === 'fatture' ? parti[0] : 'riepilogo';
-  const navOn = pag === 'movimenti' || pag === 'fatture' ? 'contabilita' : pag;
+  const pag = VOCI.some((v) => v[0] === parti[0]) || parti[0] === 'movimenti' || parti[0] === 'fatture' || parti[0] === 'andamento' ? parti[0] : 'riepilogo';
+  const navOn = pag === 'movimenti' || pag === 'fatture' || pag === 'andamento' ? 'contabilita' : pag;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.p === navOn));
   const m = main();
   const y = m.scrollTop;
@@ -1385,6 +1524,7 @@ async function route(mantieni) {
     else if (pag === 'contabilita') nodo = parti[1] === 'da-incassare' ? await pagDaIncassare() : parti[1] === 'da-pagare' ? await pagDaPagare() : await pagContabilita();
     else if (pag === 'personale') nodo = await pagPersonale();
     else if (pag === 'fatture') nodo = parti[1] && /^\d+$/.test(parti[1]) ? await pagFattura(Number(parti[1])) : await pagFatture();
+    else if (pag === 'andamento') nodo = await pagAndamento();
     else if (pag === 'movimenti') nodo = await pagMovimenti(parti[1]);
     else nodo = await pagMagazzino();
     if (my !== tok) return;

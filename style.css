@@ -196,3 +196,18 @@ label.f > span { display: block; margin-bottom: 5px; font-size: .85rem; font-wei
 .sheet-h { justify-content: flex-start; }
 .sheet-h h3 { flex: 1; min-width: 0; }
 @media (min-width: 900px) { .topline { top: -24px; margin: -24px -24px 8px; padding: 8px 24px; } }
+
+/* Andamento */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.chip { border: 2px solid var(--line); background: transparent; color: var(--mut); border-radius: 20px; padding: 8px 14px; font: inherit; min-height: 40px; }
+.chip.on { color: var(--txt); background: rgba(255,255,255,.08); }
+.chip.c-ent.on { border-color: var(--acc); } .chip.c-usc.on { border-color: var(--warn); }
+.chip.c-pre.on { border-color: var(--blue); } .chip.c-sal.on { border-color: var(--txt); }
+.chart-sc { overflow-x: auto; -webkit-overflow-scrolling: touch; border: 1px solid var(--line); border-radius: 12px; padding: 4px 0; }
+.chart-sc svg { display: block; touch-action: pan-x pan-y; }
+.chart .gr { stroke: var(--line); stroke-width: .5; opacity: .6; } .chart .z { stroke: var(--mut); stroke-width: 1; }
+.chart .tk { fill: var(--mut); font-size: 10px; }
+.chart .b-entrate { fill: var(--acc); } .chart .b-uscite { fill: var(--warn); } .chart .b-prelievi { fill: var(--blue); }
+.chart .l-saldo { fill: none; stroke: var(--txt); stroke-width: 2; } .chart .p-saldo { fill: var(--txt); }
+.chart .hit { fill: transparent; cursor: pointer; } .chart .selm { fill: rgba(255,255,255,.1); }
+.bar .full { grid-column: 1 / -1; }
