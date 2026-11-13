@@ -207,7 +207,11 @@ label.f > span { display: block; margin-bottom: 5px; font-size: .85rem; font-wei
 .chart-sc svg { display: block; touch-action: pan-x pan-y; }
 .chart .gr { stroke: var(--line); stroke-width: .5; opacity: .6; } .chart .z { stroke: var(--mut); stroke-width: 1; }
 .chart .tk { fill: var(--mut); font-size: 10px; }
-.chart .b-entrate { fill: var(--acc); } .chart .b-uscite { fill: var(--warn); } .chart .b-prelievi { fill: var(--blue); }
-.chart .l-saldo { fill: none; stroke: var(--txt); stroke-width: 2; } .chart .p-saldo { fill: var(--txt); }
+.chart .ln { fill: none; stroke-width: 2.2; stroke-linejoin: round; pointer-events: none; }
+.chart .l-entrate { stroke: var(--acc); } .chart .l-uscite { stroke: var(--warn); } .chart .l-prelievi { stroke: var(--blue); } .chart .l-saldo { stroke: var(--txt); stroke-dasharray: 5 3; }
+.chart .pt { stroke: var(--bg, #111); stroke-width: 1; cursor: pointer; }
+.chart .p-entrate { fill: var(--acc); } .chart .p-uscite { fill: var(--warn); } .chart .p-prelievi { fill: var(--blue); } .chart .p-saldo { fill: var(--txt); }
+.chart .val { font-size: 10px; font-weight: 600; paint-order: stroke; stroke: var(--bg, #111); stroke-width: 3px; pointer-events: none; }
+.chart .v-entrate { fill: var(--acc); } .chart .v-uscite { fill: var(--warn); } .chart .v-prelievi { fill: var(--blue); } .chart .v-saldo { fill: var(--txt); }
 .chart .hit { fill: transparent; cursor: pointer; } .chart .selm { fill: rgba(255,255,255,.1); }
 .bar .full { grid-column: 1 / -1; }

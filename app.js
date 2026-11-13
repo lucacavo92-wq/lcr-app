@@ -1110,24 +1110,28 @@ async function pagAndamento() {
       svg.append(sv('line', { x1: L, x2: W, y1: y(v), y2: y(v), class: 'gr' }), sv('text', { x: L - 4, y: y(v) + 3, class: 'tk', 'text-anchor': 'end' }, fmtCompatto(v)));
     }
     svg.append(sv('line', { x1: L, x2: W, y1: y(0), y2: y(0), class: 'z' }));
-    const cw = (W - L) / mesi.length, bw = Math.max(5, Math.min(16, (cw - 8) / Math.max(1, barre.length)));
-    const pts = [];
+    const cw = (W - L) / mesi.length;
+    const cxOf = (i) => L + cw * i + cw / 2;
     mesi.forEach((o, i) => {
-      const cx = L + cw * i + cw / 2;
-      const g = sv('g', {});
-      if (st.sel === o.ym) g.append(sv('rect', { x: L + cw * i, y: T, width: cw, height: ph, class: 'selm' }));
-      barre.forEach((k, j) => {
-        const x = cx - bw * barre.length / 2 + bw * j, y0 = y(0), y1 = y(o[k]);
-        g.append(sv('rect', { x, y: Math.min(y0, y1), width: bw - 1, height: Math.max(1, Math.abs(y0 - y1)), class: 'b-' + k }));
-      });
-      g.append(sv('text', { x: cx, y: H - 10, class: 'tk', 'text-anchor': 'middle' }, nomeMese(o.ym)));
-      g.append(sv('rect', { x: L + cw * i, y: T, width: cw, height: H - T, class: 'hit', 'data-ym': o.ym }));
-      svg.append(g);
-      pts.push(cx + ',' + y(o.saldo));
+      const cx = cxOf(i);
+      if (st.sel === o.ym) svg.append(sv('rect', { x: L + cw * i, y: T, width: cw, height: ph, class: 'selm' }));
+      svg.append(sv('text', { x: cx, y: H - 10, class: 'tk', 'text-anchor': 'middle' }, nomeMese(o.ym)));
+      svg.append(sv('rect', { x: L + cw * i, y: T, width: cw, height: H - T, class: 'hit', 'data-ym': o.ym }));
     });
-    if (st.serie.saldo) {
-      svg.append(sv('polyline', { points: pts.join(' '), class: 'l-saldo' }));
-      pts.forEach((p) => { const q = p.split(','); svg.append(sv('circle', { cx: q[0], cy: q[1], r: 3, class: 'p-saldo' })); });
+    // una linea per serie (i mesi vuoti valgono 0), con puntini toccabili
+    att.forEach((k) => {
+      svg.append(sv('polyline', { points: mesi.map((o, i) => cxOf(i) + ',' + y(o[k])).join(' '), class: 'ln l-' + k }));
+      mesi.forEach((o, i) => {
+        const c = sv('circle', { cx: cxOf(i), cy: y(o[k]), r: st.sel === o.ym ? 5 : 3.5, class: 'pt p-' + k, 'data-ym': o.ym });
+        c.append(sv('title', {}, nomeMese(o.ym) + ' - ' + k + ': ' + fmtEur(o[k])));
+        svg.append(c);
+      });
+    });
+    // valore dei puntini del mese selezionato
+    const os = st.sel ? mesi.findIndex((x) => x.ym === st.sel) : -1;
+    if (os >= 0) {
+      const cx = cxOf(os), ancora = cx > W - 60 ? 'end' : 'start', dx = ancora === 'end' ? -8 : 8;
+      att.forEach((k) => svg.append(sv('text', { x: cx + dx, y: y(mesi[os][k]) - 7, class: 'val v-' + k, 'text-anchor': ancora }, fmtCompatto(mesi[os][k]))));
     }
     svg.addEventListener('click', (e) => { const ym = e.target.getAttribute && e.target.getAttribute('data-ym'); if (ym) { st.sel = st.sel === ym ? '' : ym; disegna(); } });
     const wrap = h('div', { class: 'chart-sc' }, svg);
