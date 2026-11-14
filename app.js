@@ -253,6 +253,12 @@ function realApi() {
       ]);
       return { mesi: ok(g), schede: ok(s) };
     },
+    async guadagnoMese(ym) {
+      const a = ym + '-01', p = ym.split('-'), nx = new Date(Number(p[0]), Number(p[1]), 1);
+      const b = nx.getFullYear() + '-' + pad(nx.getMonth() + 1) + '-01';
+      return ok(await sb.from('lcr_movimenti_contabili').select('id,data,tipo,totale,categoria,descrizione,fondo,cassa,stato_pagamento,scheda_id')
+        .eq('annullato', false).gte('data', a).lt('data', b).order('data'));
+    },
     async venditaBanco(art, q, prezzo, cliente, cassa, data) { ok(await sb.rpc('lcr_vendita_banco', { p_articolo: art, p_quantita: q, p_prezzo: prezzo, p_cliente: cliente || '', p_cassa: cassa, p_data: data })); },
     async gommeAParte(id, importo, data) { ok(await sb.rpc('lcr_gomme_a_parte', { p_scheda: id, p_importo: importo, p_data: data, p_nota: 'da app' })); },
     async incassa(id, metodo, data, importo) {
@@ -517,6 +523,7 @@ function demoApi() {
       return [{ codice: 'officina', nome: 'Cassa officina', obiettivo: null, saldo: (await this.riepilogo()).cassa },
         { codice: 'gomme_PR', nome: 'Cassa gomme fattura PR', obiettivo: 500, saldo: 150, fattura_id: 4 }];
     },
+    async guadagnoMese() { await attesa(); return []; },
     async guadagno() {
       await attesa();
       const ym = oggi.slice(0, 7);
@@ -698,6 +705,7 @@ const SEZIONI = ['Oli', 'Materiali di consumo', 'Liquidi refrigeranti', 'Ricambi
 function sezioniDa(list) { return Array.from(new Set(SEZIONI.concat(list.map((a) => a.sezione).filter(Boolean)))); }
 
 function sfoglia(lista, opt) {
+  lista = lista.filter((a) => a.sezione !== 'Materiali di consumo');
   const st = { q: '', cat: '', marchio: '', esauriti: false };
   const cats = Array.from(new Set(lista.map((a) => a.sezione).filter(Boolean))).sort(coll.compare);
   const marchi = Array.from(new Set(lista.map((a) => a.marchio).filter(Boolean))).sort(coll.compare);
@@ -1031,10 +1039,20 @@ function cardFidanza(c) {
     h('div', { class: 'row small muted' }, h('span', { text: 'Dalla cassa (non tracciati)' }), h('span', { text: fmtEur(round2(ob - g)) })));
 }
 function blocchiCasse(casse) {
-  const altre = casse.filter((c) => c.codice !== 'officina' && c.codice !== 'gomme_PR_fuori');
+  const altre = casse.filter((c) => c.codice !== 'officina' && c.codice !== 'gomme_PR_fuori' && c.codice !== 'fidanza');
   return altre.map((c) => (c.codice === 'fidanza' ? cardFidanza(c) : c.obiettivo != null ? cardCassaObiettivo(c)
     : h('div', { class: 'card cassa' }, h('div', { class: 'row' }, h('span', { class: 't', text: c.nome }), h('span', { class: 'pz', text: fmtEur(c.saldo) })),
       null)));
+}
+
+function cardCassaSemplice(c) {
+  return h('div', { class: 'card cassa' }, h('div', { class: 'row' }, h('span', { class: 't', text: c.nome }), h('span', { class: 'pz', text: fmtEur(c.saldo) })));
+}
+async function pagCasse() {
+  const casse = await api.casse();
+  return h('div', { class: 'page' }, backA('#contabilita', 'Contabilità'),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Casse' })),
+    casse.map((c) => c.codice === 'fidanza' ? cardFidanza(c) : c.obiettivo != null ? cardCassaObiettivo(c) : cardCassaSemplice(c)));
 }
 
 async function pagContabilita() {
@@ -1056,6 +1074,7 @@ async function pagContabilita() {
       btn('Fatture', 'fattura', 'sec', () => { location.hash = '#fatture'; }),
       btn('Andamento', 'chart', 'sec', () => { location.hash = '#andamento'; }),
       btn('Guadagno', 'chart', 'sec', () => { location.hash = '#guadagno'; }),
+      btn('Casse', 'cash', 'sec', () => { location.hash = '#casse'; }),
       btn('Prelievo', 'cash', 'sec', () => tendinaPrelievo()),
       btn('Vendita a banco', 'plus', 'sec', () => tendinaBanco())),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Entrate previste' })),
@@ -1294,7 +1313,7 @@ async function pagGuadagno() {
   const eur = (v) => h('span', { class: Number(v) < 0 ? 'neg' : '', text: fmtEur(v) });
   const mese = (m) => {
     const gm = round2(Number(m.incassi_officina) - Number(m.costi_materiali));
-    return h('div', { class: 'item static' },
+    return h('button', { type: 'button', class: 'item', onclick: () => { location.hash = '#guadagno/' + m.mese; } },
       h('div', { class: 'grow' }, h('div', { class: 't', text: nomeMese(m.mese) }),
         h('div', { class: 's', text: 'Incassi ' + fmtEur(m.incassi_officina) + ' · Costi ' + fmtEur(m.costi_materiali) })),
       h('div', { class: 'r' }, eur(gm)));
@@ -1314,6 +1333,36 @@ async function pagGuadagno() {
     g.mesi.length ? g.mesi.slice().reverse().map(mese) : h('div', { class: 'empty', text: '—' }),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Per scheda' })),
     g.schede.length ? g.schede.map(scheda) : h('div', { class: 'empty', text: '—' }));
+}
+
+async function pagGuadagnoMese(ym) {
+  const [g, mov] = await Promise.all([api.guadagno(), api.guadagnoMese(ym)]);
+  const eur = (v) => h('span', { class: Number(v) < 0 ? 'neg' : '', text: fmtEur(v) });
+  const MAT = ['Ricambi cliente', 'Materiale di consumo'];
+  const voci = [];
+  mov.forEach((m) => {
+    const t = Number(m.totale) || 0;
+    if (m.tipo === 'Entrata') voci.push({ m, v: t });
+    else if (m.tipo === 'Uscita' && m.cassa !== 'officina') voci.push({ m, v: -t });
+    else if (m.tipo === 'Uscita' && m.fondo === 'Budget iniziale' && m.stato_pagamento === 'Pagato' && MAT.indexOf(m.categoria) >= 0) voci.push({ m, v: -t });
+  });
+  const tot = round2(voci.reduce((t, x) => t + x.v, 0));
+  const sch = g.schede.filter((s) => String(s.data_incasso).slice(0, 7) === ym);
+  const rigaS = (s) => h('button', { type: 'button', class: 'item', onclick: () => { location.hash = '#schede/' + s.scheda_id; } },
+    h('div', { class: 'grow' }, h('div', { class: 't', text: s.codice + ' · ' + (s.cliente_testo || '—') })),
+    h('div', { class: 'r' }, eur(round2(Number(s.prezzo_finale) - Number(s.gomme_a_parte) - Number(s.costo_materiali)))));
+  const rigaM = (x) => h('div', { class: 'item static' },
+    h('div', { class: 'grow' }, h('div', { class: 't', text: x.m.descrizione || x.m.categoria || '—' }), h('div', { class: 's', text: fmtData(x.m.data) })),
+    h('div', { class: 'r' }, eur(x.v)));
+  return h('div', { class: 'page' }, backA('#guadagno', 'Guadagno'),
+    h('div', { class: 'sec-t' }, h('h2', { text: nomeMese(ym) })),
+    h('div', { class: 'grid2' }, kpi('Guadagno', tot, 'big')),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Schede' })),
+    sch.length ? sch.map(rigaS) : h('div', { class: 'empty', text: '—' }),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Entrate' })),
+    voci.filter((x) => x.v >= 0).map(rigaM),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Uscite' })),
+    voci.filter((x) => x.v < 0).map(rigaM));
 }
 
 async function pagFatture() {
@@ -1692,7 +1741,7 @@ async function route(mantieni) {
   const my = ++tok;
   guardia = null;
   const parti = (location.hash || '#riepilogo').slice(1).split('/');
-  const EXTRA = ['movimenti', 'fatture', 'andamento', 'guadagno'];
+  const EXTRA = ['movimenti', 'fatture', 'andamento', 'guadagno', 'casse'];
   const pag = VOCI.some((v) => v[0] === parti[0]) || EXTRA.indexOf(parti[0]) >= 0 ? parti[0] : 'riepilogo';
   const navOn = EXTRA.indexOf(pag) >= 0 ? 'contabilita' : pag;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.p === navOn));
@@ -1708,7 +1757,8 @@ async function route(mantieni) {
     else if (pag === 'personale') nodo = await pagPersonale();
     else if (pag === 'fatture') nodo = parti[1] && /^\d+$/.test(parti[1]) ? await pagFattura(Number(parti[1])) : await pagFatture();
     else if (pag === 'andamento') nodo = await pagAndamento();
-    else if (pag === 'guadagno') nodo = await pagGuadagno();
+    else if (pag === 'guadagno') nodo = parti[1] ? await pagGuadagnoMese(parti[1]) : await pagGuadagno();
+    else if (pag === 'casse') nodo = await pagCasse();
     else if (pag === 'movimenti') nodo = await pagMovimenti(parti[1]);
     else nodo = await pagMagazzino();
     if (my !== tok) return;
