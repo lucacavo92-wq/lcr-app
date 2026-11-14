@@ -215,6 +215,8 @@ function realApi() {
         guadagnoMese()
       ]);
       const r = ok(v), di = ok(daInc);
+      const art = ok(await sb.from('lcr_articoli').select('sezione,giacenza,costo_unit'));
+      r.valore_magazzino = round2(art.filter((a) => a.sezione !== 'Materiali di consumo').reduce((t, a) => t + Number(a.giacenza) * Number(a.costo_unit), 0));
       return {
         cassa: Number(r.cassa_teorica), daIncassare: Number(r.da_incassare), daPagare: Number(r.da_pagare_fornitori),
         magazzino: Number(r.valore_magazzino), guadagnoMese: guad, prelievi: Number(r.prelievi) || 0,
@@ -490,7 +492,7 @@ function demoApi() {
       const ids = Array.from(new Set(movimenti.filter((m) => m.tipo === 'Entrata' && !m.annullato && m.scheda_id && m.data.slice(0, 7) === ym).map((m) => m.scheda_id)));
       return {
         cassa: round2(1000 + entrate - 312.4 - prelieviTot()), prelievi: prelieviTot(), daIncassare: round2(di.reduce((t, s) => t + residuoDi(s), 0)), daPagare: daPagareTot(),
-        magazzino: round2(articoli.reduce((t, a) => t + a.giacenza * a.costo_unit, 0)),
+        magazzino: round2(articoli.filter((a) => a.sezione !== 'Materiali di consumo').reduce((t, a) => t + a.giacenza * a.costo_unit, 0)),
         guadagnoMese: round2(ids.reduce((t, i) => t + trova(i).prezzo_finale - trova(i).costo_materiali, 0)),
         entratePreviste: round2(di.reduce((t, s) => t + residuoDi(s), 0)), entrateN: di.length
       };
@@ -1666,7 +1668,9 @@ async function tendinaRicambio(scheda) {
 /* ---- 3. MAGAZZINO */
 async function pagMagazzino() {
   const lista = await api.articoli();
+  const val = round2(lista.filter((a) => a.sezione !== 'Materiali di consumo').reduce((t, a) => t + Number(a.giacenza) * Number(a.costo_unit), 0));
   return h('div', { class: 'page' },
+    h('div', { class: 'grid2' }, kpi('Valore magazzino', val)),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Articoli' }), ibtn('plus', 'Aggiungi pezzo', '', () => nuovoArticolo(lista))),
     sfoglia(lista, { esauriti: true, onPick: (a) => dettaglioArticolo(a, lista) }));
 }
