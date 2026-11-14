@@ -1056,14 +1056,9 @@ async function pagCasse() {
 }
 
 async function pagContabilita() {
-  const [r, casse, g] = await Promise.all([api.riepilogo(), api.casse(), api.guadagno()]);
-  const gv = round2(g.mesi.reduce((t, m) => t + Number(m.incassi_officina) - Number(m.costi_materiali), 0));
+  const r = await api.riepilogo();
   return h('div', { class: 'page' },
     h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#riepilogo'; } }, ic('back'), h('span', { text: 'Riepilogo' })),
-    h('div', { class: 'sec-t' }, h('h2', { text: 'Casse' })),
-    h('div', { class: 'grid2' }, kpiLink('Cassa officina', r.cassa, '#movimenti'), kpiLink('Guadagno vero', gv, '#guadagno')),
-    h('div', { class: 'gap' }),
-    blocchiCasse(casse),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Panoramica' })),
     h('div', { class: 'grid2' }, kpiLink('Da incassare', r.daIncassare, '#contabilita/da-incassare'),
       kpiLink('Da pagare', r.daPagare, '#contabilita/da-pagare'), kpiLink('Magazzino', r.magazzino, '#magazzino'),
