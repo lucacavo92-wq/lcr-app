@@ -253,6 +253,7 @@ function realApi() {
       ]);
       return { mesi: ok(g), schede: ok(s) };
     },
+    async venditaBanco(art, q, prezzo, cliente, cassa, data) { ok(await sb.rpc('lcr_vendita_banco', { p_articolo: art, p_quantita: q, p_prezzo: prezzo, p_cliente: cliente || '', p_cassa: cassa, p_data: data })); },
     async gommeAParte(id, importo, data) { ok(await sb.rpc('lcr_gomme_a_parte', { p_scheda: id, p_importo: importo, p_data: data, p_nota: 'da app' })); },
     async incassa(id, metodo, data, importo) {
       ok(await sb.rpc('lcr_incassa_scheda', { p_scheda: id, p_metodo: metodo, p_data: data, p_importo: importo }));
@@ -344,6 +345,12 @@ function realApi() {
     async usoModifica(id, campi) { ok(await sb.from('lcr_uso_personale').update(campi).eq('id', id)); },
     async usoMagazzino(articolo, q, perCosa, nota, data) {
       ok(await sb.rpc('lcr_uso_personale_magazzino', { p_articolo: articolo, p_quantita: q, p_per_cosa: perCosa, p_nota: nota || '', p_data: data }));
+    },
+    async venditaBanco(art, q) {
+      await attesa();
+      const a = articoli.find((x) => x.id === art);
+      if (a.giacenza < q) throw { message: 'Giacenza insufficiente' };
+      a.giacenza -= q;
     },
     async usoSpesa(importo, descrizione, perCosa, data, nota) {
       ok(await sb.rpc('lcr_uso_personale_spesa', { p_importo: importo, p_descrizione: descrizione, p_per_cosa: perCosa, p_data: data, p_nota: nota || '' }));
@@ -937,6 +944,45 @@ async function tendinaUsoMagazzino() {
   sh.set(sfoglia(lista, { onPick: scegli }));
 }
 
+// Vendita a banco (senza scheda): scarica il magazzino e registra l'entrata nella cassa scelta
+async function tendinaBanco() {
+  const sh = openSheet('Vendita a banco');
+  sh.set(h('div', { class: 'empty', text: '…' }));
+  const lista = await run(() => api.articoli());
+  if (!lista) { sh.close(); return; }
+  const scegli = (a) => {
+    sh.setTitle(a.nome);
+    const q = ninp(1), prezzo = ninp(a.prezzo_vendita || ''), cli = tinp('', { maxlength: '100', 'aria-label': 'Cliente' });
+    const data = h('input', { type: 'date', value: isoLocale(new Date()), 'aria-label': 'Data' });
+    const cassa = h('select', { 'aria-label': 'Cassa' },
+      h('option', { value: '', text: 'Scegli…' }),
+      h('option', { value: 'officina', text: 'Cassa officina' }),
+      h('option', { value: 'gomme_PR', text: 'Cassa gomme PR 3777/1 (a parte)' }));
+    let invio = false;
+    const go = async () => {
+      if (invio) return;
+      const qn = parseNum(q.value), pn = parseNum(prezzo.value);
+      if (!(qn > 0)) { toast('Quantità non valida', true); return; }
+      if (qn > Number(a.giacenza)) { toast('Giacenza insufficiente', true); return; }
+      if (!(pn >= 0) || prezzo.value === '') { toast('Prezzo non valido', true); return; }
+      if (!cassa.value) { toast('Scegli la cassa', true); return; }
+      if (!data.value) { toast('Data mancante', true); return; }
+      invio = true;
+      const okk = await run(async () => { await api.venditaBanco(a.id, qn, round2(pn), cli.value.trim(), cassa.value, data.value); return true; });
+      invio = false;
+      if (okk) { sh.close(); toast('Venduto'); route(true); }
+    };
+    sh.set(
+      h('div', { class: 'row' }, h('span', { class: 'muted', text: [a.marchio, a.sezione].filter(Boolean).join(' · ') }),
+        h('span', { class: 'pz', text: fmtNum(a.giacenza) + ' ' + a.unita })),
+      campo('Quantità', q), campo('Prezzo unitario €', prezzo), campo('Cliente (facoltativo)', cli), campo('Cassa', cassa), campo('Data', data),
+      h('button', { type: 'button', class: 'back', onclick: () => { sh.setTitle('Vendita a banco'); sh.set(sfoglia(lista, { onPick: scegli })); } }, ic('back'), h('span', { text: 'Magazzino' })));
+    sh.foot(btn('Conferma', 'check', 'full', go));
+    setTimeout(() => q.select(), 250);
+  };
+  sh.set(sfoglia(lista, { onPick: scegli }));
+}
+
 // Spesa personale: importo, descrizione, per cosa, data
 function tendinaUsoSpesa() {
   const sh = openSheet('Spesa');
@@ -976,9 +1022,17 @@ function cardCassaObiettivo(c) {
   return c.fattura_id ? h('button', { type: 'button', class: 'card cassa kpib', onclick: () => { location.hash = '#fatture/' + c.fattura_id; } }, ...cont)
     : h('div', { class: 'card cassa' }, ...cont);
 }
+function cardFidanza(c) {
+  const ob = Number(c.obiettivo) || 0, g = Number(c.saldo) || 0;
+  return h('button', { type: 'button', class: 'card cassa kpib', onclick: () => { location.hash = '#fatture/' + c.fattura_id; } },
+    h('div', { class: 'row' }, h('span', { class: 't', text: c.nome }), h('span', { class: 'pz', text: 'CHIUSO' })),
+    h('div', { class: 'row small' }, h('span', { text: 'Dati a Fidanza' }), h('span', { text: fmtEur(ob) })),
+    h('div', { class: 'row small muted' }, h('span', { text: 'Dalle gomme di Nicolò (LAV-0015)' }), h('span', { text: fmtEur(g) })),
+    h('div', { class: 'row small muted' }, h('span', { text: 'Dalla cassa (non tracciati)' }), h('span', { text: fmtEur(round2(ob - g)) })));
+}
 function blocchiCasse(casse) {
-  const altre = casse.filter((c) => c.codice !== 'officina');
-  return altre.map((c) => (c.obiettivo != null ? cardCassaObiettivo(c)
+  const altre = casse.filter((c) => c.codice !== 'officina' && c.codice !== 'gomme_PR_fuori');
+  return altre.map((c) => (c.codice === 'fidanza' ? cardFidanza(c) : c.obiettivo != null ? cardCassaObiettivo(c)
     : h('div', { class: 'card cassa' }, h('div', { class: 'row' }, h('span', { class: 't', text: c.nome }), h('span', { class: 'pz', text: fmtEur(c.saldo) })),
       c.note ? h('div', { class: 'small muted', text: c.note }) : null)));
 }
@@ -1002,7 +1056,8 @@ async function pagContabilita() {
       btn('Fatture', 'fattura', 'sec', () => { location.hash = '#fatture'; }),
       btn('Andamento', 'chart', 'sec', () => { location.hash = '#andamento'; }),
       btn('Guadagno', 'chart', 'sec', () => { location.hash = '#guadagno'; }),
-      btn('Prelievo', 'cash', 'span2', () => tendinaPrelievo())),
+      btn('Prelievo', 'cash', 'sec', () => tendinaPrelievo()),
+      btn('Vendita a banco', 'plus', 'sec', () => tendinaBanco())),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Entrate previste' })),
     h('div', { class: 'kpi' }, h('div', { class: 'l', text: r.entrateN + (r.entrateN === 1 ? ' scheda' : ' schede') }), h('div', { class: 'v', text: fmtEur(r.entratePreviste) })),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Uscite previste' })),
