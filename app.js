@@ -1034,7 +1034,7 @@ function blocchiCasse(casse) {
   const altre = casse.filter((c) => c.codice !== 'officina' && c.codice !== 'gomme_PR_fuori');
   return altre.map((c) => (c.codice === 'fidanza' ? cardFidanza(c) : c.obiettivo != null ? cardCassaObiettivo(c)
     : h('div', { class: 'card cassa' }, h('div', { class: 'row' }, h('span', { class: 't', text: c.nome }), h('span', { class: 'pz', text: fmtEur(c.saldo) })),
-      c.note ? h('div', { class: 'small muted', text: c.note }) : null)));
+      null)));
 }
 
 async function pagContabilita() {
@@ -1310,11 +1310,9 @@ async function pagGuadagno() {
   return h('div', { class: 'page' }, backA('#contabilita', 'Contabilità'),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Guadagno vero' })),
     h('div', { class: 'grid2' }, kpi('Incassi officina', inc), kpi('Costi materiali', cos), kpi('Guadagno', round2(inc - cos), 'big')),
-    h('div', { class: 'spiega', text: 'Incassi rimasti in cassa officina meno spese pagate dal budget per ricambi e materiale di consumo (IVA compresa). Esclusi prelievi, aggiusti e soldi gomme PR.' }),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Per mese' })),
     g.mesi.length ? g.mesi.slice().reverse().map(mese) : h('div', { class: 'empty', text: '—' }),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Per scheda' })),
-    h('div', { class: 'spiega', text: 'Margine = prezzo - gomme PR messe a parte - costo materiali della scheda (senza IVA).' }),
     g.schede.length ? g.schede.map(scheda) : h('div', { class: 'empty', text: '—' }));
 }
 
@@ -1368,10 +1366,9 @@ async function pagFattura(id) {
   return h('div', { class: 'page' },
     h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#fatture'; } }, ic('back'), h('span', { text: 'Fatture' })),
     h('div', { class: 'sec-t' }, h('h2', { text: f.fornitore || '—' }), f.informativa ? h('span', { class: 'badge b-lav', text: 'Cassa gomme' }) : badgeFatt(f.stato)),
-    f.informativa ? h('div', { class: 'spiega', text: 'Voce informativa: non crea uscite e non cambia la cassa officina.' }) : null,
     cassa ? cardCassaObiettivo(Object.assign({}, cassa, { fattura_id: null })) : null,
     rr('Numero', f.numero || '—'), rr('Data', fmtData(f.data) || '—'),
-    h('div', { class: 'grid3' }, kpi('Imponibile', f.imponibile), kpi('IVA', f.iva), kpi('Totale', f.totale)),
+    h('div', { class: 'grid2' }, kpi('Totale', f.totale)),
     f.stato === 'Pagata' ? [h('div', { class: 'gap' }), rr('Pagata il', fmtData(f.data_pagamento) || '—'), rr('Metodo', f.metodo || '—')] : null,
     f.note ? rr('Note', f.note) : null,
     h('div', { class: 'sec-t' }, h('h2', { text: 'Voci' })),
@@ -1566,8 +1563,7 @@ async function pagScheda(id) {
       incassabile ? btn('Incassa', 'cash', 'full', incassa) : null) : null,
     d.margine ? h('div', { class: 'card' },
       h('div', { class: 'row' }, h('span', { class: 'muted', text: 'Margine' }),
-        h('span', { class: 'pz', text: fmtEur(round2(Number(d.margine.prezzo_finale) - Number(d.margine.gomme_a_parte) - Number(d.margine.costo_materiali))) })),
-      h('div', { class: 'spiega', text: 'Prezzo ' + fmtEur(d.margine.prezzo_finale) + (Number(d.margine.gomme_a_parte) ? ' - gomme PR ' + fmtEur(d.margine.gomme_a_parte) : '') + ' - materiali ' + fmtEur(round2(d.margine.costo_materiali)) + ' (senza IVA)' })) : null,
+        h('span', { class: 'pz', text: fmtEur(round2(Number(d.margine.prezzo_finale) - Number(d.margine.gomme_a_parte) - Number(d.margine.costo_materiali))) }))) : null,
     h('div', { class: 'card' },
       campo('Descrizione', descr), campo('Moto', moto),
       h('div', { class: 'two' }, campo('Ore', ore), campo('Tariffa €/h', tar)),
