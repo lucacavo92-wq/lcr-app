@@ -215,3 +215,13 @@ label.f > span { display: block; margin-bottom: 5px; font-size: .85rem; font-wei
 .chart .v-entrate { fill: var(--acc); } .chart .v-uscite { fill: var(--warn); } .chart .v-prelievi { fill: var(--blue); } .chart .v-saldo { fill: var(--txt); }
 .chart .hit { fill: transparent; cursor: pointer; } .chart .selm { fill: rgba(255,255,255,.1); }
 .bar .full { grid-column: 1 / -1; }
+
+/* Casse e guadagno (14/11/2026) */
+.acts .span2 { grid-column: 1 / -1; }
+.card.cassa { display: block; width: 100%; text-align: left; color: var(--txt); font: inherit; }
+.card.cassa .t { font-weight: 700; }
+.card.cassa .row + .row, .card.cassa .prog + .row { margin-top: 6px; }
+.prog { height: 12px; border-radius: 6px; background: var(--s3); border: 1px solid var(--line); overflow: hidden; margin-top: 10px; }
+.prog-f { height: 100%; background: var(--acc); }
+.spiega { font-size: .85rem; color: var(--mut); margin: 6px 0 4px; }
+.pos { color: var(--acc); }

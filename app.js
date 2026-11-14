@@ -236,8 +236,24 @@ function realApi() {
         sb.from('lcr_v_scheda_saldo').select('scheda_id,incassato,residuo').eq('scheda_id', id)
       ]);
       const m = {}; (ok(sal) || []).forEach((x) => { m[x.scheda_id] = x; });
-      return { scheda: unisciSaldi([ok(s)], m)[0], righe: ok(r) };
+      const [mg, pr] = await Promise.all([
+        sb.from('lcr_v_scheda_margine').select('*').eq('scheda_id', id),
+        sb.from('lcr_articoli').select('id').ilike('note', '%PR 3777%')
+      ]);
+      const prIds = new Set(ok(pr).map((a) => a.id));
+      return { scheda: unisciSaldi([ok(s)], m)[0], righe: ok(r).map((x) => Object.assign({}, x, { pr: prIds.has(x.articolo_id) })), margine: (ok(mg) || [])[0] || null };
     },
+    // Casse (officina, gomme PR, ...) con saldo
+    async casse() { return ok(await sb.from('lcr_v_casse').select('*').order('ordine')); },
+    // Guadagno vero: per mese + margine per scheda
+    async guadagno() {
+      const [g, s] = await Promise.all([
+        sb.from('lcr_v_guadagno_mese').select('*').order('mese'),
+        sb.from('lcr_v_scheda_margine').select('*').not('data_incasso', 'is', null).order('data_incasso', { ascending: false })
+      ]);
+      return { mesi: ok(g), schede: ok(s) };
+    },
+    async gommeAParte(id, importo, data) { ok(await sb.rpc('lcr_gomme_a_parte', { p_scheda: id, p_importo: importo, p_data: data, p_nota: 'da app' })); },
     async incassa(id, metodo, data, importo) {
       ok(await sb.rpc('lcr_incassa_scheda', { p_scheda: id, p_metodo: metodo, p_data: data, p_importo: importo }));
     },
@@ -292,7 +308,7 @@ function realApi() {
     },
     // Fatture (sola lettura) + segna pagata
     async fatture() {
-      return ok(await sb.from('lcr_fatture').select('id,fornitore,numero,data,totale,stato').order('data', { ascending: false }).order('id', { ascending: false }));
+      return ok(await sb.from('lcr_fatture').select('id,fornitore,numero,data,totale,stato,informativa,cassa').order('data', { ascending: false }).order('id', { ascending: false }));
     },
     async fattura(id) {
       const [f, r] = await Promise.all([
@@ -419,7 +435,8 @@ function demoApi() {
   const fatture = [
     { id: 1, fornitore: 'Ricambi Rossi Srl', numero: '2026/412', data: gg(5), imponibile: 87.7, iva: 19.3, totale: 107, stato: 'Da pagare', data_pagamento: null, metodo: '', note: '' },
     { id: 2, fornitore: 'Moto Parts', numero: 'FT-88', data: gg(30), imponibile: 163.93, iva: 36.07, totale: 200, stato: 'Pagata', data_pagamento: gg(20), metodo: 'Bonifico', note: '' },
-    { id: 3, fornitore: 'Energia Spa', numero: '', data: null, imponibile: 79.43, iva: 17.47, totale: 96.9, stato: 'Pagata', data_pagamento: gg(15), metodo: 'Carta', note: 'Luce officina' }
+    { id: 3, fornitore: 'Energia Spa', numero: '', data: null, imponibile: 79.43, iva: 17.47, totale: 96.9, stato: 'Pagata', data_pagamento: gg(15), metodo: 'Carta', note: 'Luce officina' },
+    { id: 4, fornitore: 'Gomme Srl', numero: 'PR-1', data: gg(40), imponibile: 1000, iva: 220, totale: 1220, stato: 'Da pagare', data_pagamento: null, metodo: '', note: 'Informativa', informativa: true, cassa: 'gomme_PR' }
   ];
   const fRighe = [
     { id: 1, fattura_id: 1, descrizione: 'Olio motore 10W40', importo: 34.5, destinazione: 'magazzino', scheda_id: null },
@@ -482,7 +499,25 @@ function demoApi() {
       schede.push(S(id, nome, moto || '', descrizione || '', 0, 'Aperto', 'Da incassare'));
       return id;
     },
-    async scheda(id) { await attesa(); return { scheda: cs(trova(id)), righe: righe.filter((r) => r.scheda_id === id).map(copia) }; },
+    async scheda(id) {
+      await attesa();
+      const s = trova(id);
+      return { scheda: cs(s), righe: righe.filter((r) => r.scheda_id === id).map(copia),
+        margine: { scheda_id: id, prezzo_finale: s.prezzo_finale, gomme_a_parte: 0, costo_materiali: s.costo_materiali } };
+    },
+    async casse() {
+      await attesa();
+      return [{ codice: 'officina', nome: 'Cassa officina', obiettivo: null, saldo: (await this.riepilogo()).cassa },
+        { codice: 'gomme_PR', nome: 'Cassa gomme fattura PR', obiettivo: 500, saldo: 150, fattura_id: 4 }];
+    },
+    async guadagno() {
+      await attesa();
+      const ym = oggi.slice(0, 7);
+      const sc = schede.filter((s) => s.pagamento === 'Incassato').map((s) => ({ scheda_id: s.id, codice: s.codice, cliente_testo: s.cliente_testo,
+        prezzo_finale: s.prezzo_finale, gomme_a_parte: 0, costo_materiali: s.costo_materiali, data_incasso: oggi }));
+      return { mesi: [{ mese: ym, incassi_officina: sc.reduce((t, s) => t + s.prezzo_finale, 0), costi_materiali: 312.4 }], schede: sc };
+    },
+    async gommeAParte() { await attesa(); },
     // Stesse regole della RPC lcr_incassa_scheda
     async incassa(id, metodo, data, importo) {
       await attesa();
@@ -927,12 +962,38 @@ function tendinaUsoSpesa() {
 }
 
 /* ---- CONTABILITA' (tutto il blocco soldi) */
+// Casse con obiettivo (es. gomme fattura PR): coperto, residuo, barra
+function cardCassaObiettivo(c) {
+  const ob = Number(c.obiettivo) || 0, cop = Number(c.saldo) || 0;
+  const pct = ob > 0 ? Math.max(0, Math.min(100, (cop / ob) * 100)) : 0;
+  const fill = h('div', { class: 'prog-f' });
+  fill.style.width = pct.toFixed(1) + '%'; // via CSSOM (la CSP blocca gli style inline)
+  const cont = [
+    h('div', { class: 'row' }, h('span', { class: 't', text: c.nome }), h('span', { class: 'muted small', text: Math.round(pct) + '%' })),
+    h('div', { class: 'prog' }, fill),
+    h('div', { class: 'row small' }, h('span', { text: 'Coperto ' + fmtEur(cop) }), h('span', { text: 'Residuo ' + fmtEur(round2(ob - cop)) })),
+    h('div', { class: 'row small muted' }, h('span', { text: 'Obiettivo' }), h('span', { text: fmtEur(ob) }))];
+  return c.fattura_id ? h('button', { type: 'button', class: 'card cassa kpib', onclick: () => { location.hash = '#fatture/' + c.fattura_id; } }, ...cont)
+    : h('div', { class: 'card cassa' }, ...cont);
+}
+function blocchiCasse(casse) {
+  const altre = casse.filter((c) => c.codice !== 'officina');
+  return altre.map((c) => (c.obiettivo != null ? cardCassaObiettivo(c)
+    : h('div', { class: 'card cassa' }, h('div', { class: 'row' }, h('span', { class: 't', text: c.nome }), h('span', { class: 'pz', text: fmtEur(c.saldo) })),
+      c.note ? h('div', { class: 'small muted', text: c.note }) : null)));
+}
+
 async function pagContabilita() {
-  const r = await api.riepilogo();
+  const [r, casse, g] = await Promise.all([api.riepilogo(), api.casse(), api.guadagno()]);
+  const gv = round2(g.mesi.reduce((t, m) => t + Number(m.incassi_officina) - Number(m.costi_materiali), 0));
   return h('div', { class: 'page' },
     h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#riepilogo'; } }, ic('back'), h('span', { text: 'Riepilogo' })),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Casse' })),
+    h('div', { class: 'grid2' }, kpiLink('Cassa officina', r.cassa, '#movimenti'), kpiLink('Guadagno vero', gv, '#guadagno')),
+    h('div', { class: 'gap' }),
+    blocchiCasse(casse),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Panoramica' })),
-    h('div', { class: 'grid2' }, kpiLink('Cassa', r.cassa, '#movimenti'), kpiLink('Da incassare', r.daIncassare, '#contabilita/da-incassare'),
+    h('div', { class: 'grid2' }, kpiLink('Da incassare', r.daIncassare, '#contabilita/da-incassare'),
       kpiLink('Da pagare', r.daPagare, '#contabilita/da-pagare'), kpiLink('Magazzino', r.magazzino, '#magazzino'),
       kpiLink('Prelievi', r.prelievi, '#movimenti/prelievi'),
       kpi('Guadagno del mese', r.guadagnoMese, 'big')),
@@ -940,7 +1001,8 @@ async function pagContabilita() {
       btn('Movimenti', 'list', 'sec', () => { location.hash = '#movimenti'; }),
       btn('Fatture', 'fattura', 'sec', () => { location.hash = '#fatture'; }),
       btn('Andamento', 'chart', 'sec', () => { location.hash = '#andamento'; }),
-      btn('Prelievo', 'cash', '', () => tendinaPrelievo())),
+      btn('Guadagno', 'chart', 'sec', () => { location.hash = '#guadagno'; }),
+      btn('Prelievo', 'cash', 'span2', () => tendinaPrelievo())),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Entrate previste' })),
     h('div', { class: 'kpi' }, h('div', { class: 'l', text: r.entrateN + (r.entrateN === 1 ? ' scheda' : ' schede') }), h('div', { class: 'v', text: fmtEur(r.entratePreviste) })),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Uscite previste' })),
@@ -1167,25 +1229,64 @@ const DEST = { scheda: 'Scheda', magazzino: 'Magazzino', personale: 'Personale',
 const METODI = ['Contanti', 'PayPal', 'Carta', 'Bonifico', 'Altro'];
 const METODI_INCASSO = ['Contanti', 'PayPal', 'Bonifico', 'Altro'];
 
+/* ---- GUADAGNO VERO: incassi officina - costi materiali; per mese e per scheda */
+const MESI_N = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
+const nomeMese = (ym) => { const p = String(ym).split('-'); return MESI_N[Number(p[1]) - 1] + ' ' + p[0]; };
+async function pagGuadagno() {
+  const g = await api.guadagno();
+  const inc = round2(g.mesi.reduce((t, m) => t + Number(m.incassi_officina), 0));
+  const cos = round2(g.mesi.reduce((t, m) => t + Number(m.costi_materiali), 0));
+  const eur = (v) => h('span', { class: Number(v) < 0 ? 'neg' : '', text: fmtEur(v) });
+  const mese = (m) => {
+    const gm = round2(Number(m.incassi_officina) - Number(m.costi_materiali));
+    return h('div', { class: 'item static' },
+      h('div', { class: 'grow' }, h('div', { class: 't', text: nomeMese(m.mese) }),
+        h('div', { class: 's', text: 'Incassi ' + fmtEur(m.incassi_officina) + ' · Costi ' + fmtEur(m.costi_materiali) })),
+      h('div', { class: 'r' }, eur(gm)));
+  };
+  const scheda = (s) => {
+    const off = round2(Number(s.prezzo_finale) - Number(s.gomme_a_parte));
+    const mg = round2(off - Number(s.costo_materiali));
+    return h('button', { type: 'button', class: 'item', onclick: () => { location.hash = '#schede/' + s.scheda_id; } },
+      h('div', { class: 'grow' }, h('div', { class: 't', text: s.codice + ' · ' + (s.cliente_testo || '—') }),
+        h('div', { class: 's', text: 'Prezzo ' + fmtEur(s.prezzo_finale) + (Number(s.gomme_a_parte) ? ' (gomme PR ' + fmtEur(s.gomme_a_parte) + ')' : '') + ' · Materiali ' + fmtEur(round2(s.costo_materiali)) })),
+      h('div', { class: 'r' }, eur(mg)));
+  };
+  return h('div', { class: 'page' }, backA('#contabilita', 'Contabilità'),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Guadagno vero' })),
+    h('div', { class: 'grid2' }, kpi('Incassi officina', inc), kpi('Costi materiali', cos), kpi('Guadagno', round2(inc - cos), 'big')),
+    h('div', { class: 'spiega', text: 'Incassi rimasti in cassa officina meno spese pagate dal budget per ricambi e materiale di consumo (IVA compresa). Esclusi prelievi, aggiusti e soldi gomme PR.' }),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Per mese' })),
+    g.mesi.length ? g.mesi.slice().reverse().map(mese) : h('div', { class: 'empty', text: '—' }),
+    h('div', { class: 'sec-t' }, h('h2', { text: 'Per scheda' })),
+    h('div', { class: 'spiega', text: 'Margine = prezzo - gomme PR messe a parte - costo materiali della scheda (senza IVA).' }),
+    g.schede.length ? g.schede.map(scheda) : h('div', { class: 'empty', text: '—' }));
+}
+
 async function pagFatture() {
-  const lista = await api.fatture();
+  const tutte = await api.fatture();
+  const info = tutte.filter((f) => f.informativa), lista = tutte.filter((f) => !f.informativa);
   const da = lista.filter((f) => f.stato !== 'Pagata'), pg = lista.filter((f) => f.stato === 'Pagata');
   const card = (f) => h('button', { type: 'button', class: 'item', onclick: () => { location.hash = '#fatture/' + f.id; } },
     h('div', { class: 'grow' }, h('div', { class: 't', text: f.fornitore || '—' }),
-      h('div', { class: 's', text: fmtData(f.data) || '—' }), h('div', { class: 'badges' }, badgeFatt(f.stato))),
+      h('div', { class: 's', text: [f.numero, fmtData(f.data)].filter(Boolean).join(' · ') || '—' }),
+      h('div', { class: 'badges' }, f.informativa ? h('span', { class: 'badge b-lav', text: 'Cassa gomme' }) : badgeFatt(f.stato))),
     h('div', { class: 'r', text: fmtEur(f.totale) }));
   const gruppo = (t, l) => [h('div', { class: 'sec-t' }, h('h2', { text: t })), l.length ? l.map(card) : h('div', { class: 'empty', text: '—' })];
   return h('div', { class: 'page' },
     h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#contabilita'; } }, ic('back'), h('span', { text: 'Contabilità' })),
     h('div', { class: 'sec-t' }, h('h2', { text: 'Fatture' })),
-    h('div', { class: 'kpi' }, h('div', { class: 'l', text: da.length + ' da pagare' }),
-      h('div', { class: 'v', text: fmtEur(da.reduce((t, f) => t + Number(f.totale), 0)) })),
+    h('div', { class: 'grid2' },
+      h('div', { class: 'kpi' }, h('div', { class: 'l', text: da.length + ' da pagare' }), h('div', { class: 'v', text: fmtEur(da.reduce((t, f) => t + Number(f.totale), 0)) })),
+      h('div', { class: 'kpi' }, h('div', { class: 'l', text: pg.length + ' pagate' }), h('div', { class: 'v', text: fmtEur(pg.reduce((t, f) => t + Number(f.totale), 0)) }))),
     h('div', { class: 'gap' }),
-    gruppo('Da pagare', da), gruppo('Pagate', pg));
+    gruppo('Da pagare', da), gruppo('Pagate', pg),
+    info.length ? gruppo('Fuori cassa officina', info) : null);
 }
 
 async function pagFattura(id) {
   const { fattura: f, righe } = await api.fattura(id);
+  const cassa = f.informativa && f.cassa ? (await api.casse()).find((c) => c.codice === f.cassa) : null;
   const rr = (l, v) => h('div', { class: 'item static' }, h('div', { class: 'grow' }, h('div', { class: 's', text: l }), h('div', { class: 't', text: v })));
   const paga = () => {
     const sh = openSheet('Segna pagata');
@@ -1208,13 +1309,15 @@ async function pagFattura(id) {
       h('div', { class: 'badges' }, h('span', { class: 'badge b-lav', text: DEST[r.destinazione] || 'Altro' }),
         r.scheda_codice ? h('span', { class: 'badge b-mut', text: r.scheda_codice }) : null)),
     h('div', { class: 'r', text: fmtEur(r.importo) }));
-  const pagata = f.stato === 'Pagata';
+  const pagata = f.stato === 'Pagata' || !!f.informativa;
   return h('div', { class: 'page' },
     h('button', { type: 'button', class: 'back', onclick: () => { location.hash = '#fatture'; } }, ic('back'), h('span', { text: 'Fatture' })),
-    h('div', { class: 'sec-t' }, h('h2', { text: f.fornitore || '—' }), badgeFatt(f.stato)),
+    h('div', { class: 'sec-t' }, h('h2', { text: f.fornitore || '—' }), f.informativa ? h('span', { class: 'badge b-lav', text: 'Cassa gomme' }) : badgeFatt(f.stato)),
+    f.informativa ? h('div', { class: 'spiega', text: 'Voce informativa: non crea uscite e non cambia la cassa officina.' }) : null,
+    cassa ? cardCassaObiettivo(Object.assign({}, cassa, { fattura_id: null })) : null,
     rr('Numero', f.numero || '—'), rr('Data', fmtData(f.data) || '—'),
     h('div', { class: 'grid3' }, kpi('Imponibile', f.imponibile), kpi('IVA', f.iva), kpi('Totale', f.totale)),
-    pagata ? [h('div', { class: 'gap' }), rr('Pagata il', fmtData(f.data_pagamento) || '—'), rr('Metodo', f.metodo || '—')] : null,
+    f.stato === 'Pagata' ? [h('div', { class: 'gap' }), rr('Pagata il', fmtData(f.data_pagamento) || '—'), rr('Metodo', f.metodo || '—')] : null,
     f.note ? rr('Note', f.note) : null,
     h('div', { class: 'sec-t' }, h('h2', { text: 'Voci' })),
     righe.length ? righe.map(voce) : h('div', { class: 'empty', text: '—' }),
@@ -1359,6 +1462,16 @@ async function pagScheda(id) {
     const imp = ninp(residuo); imp.setAttribute('aria-label', 'Importo €');
     const met = selezione(METODI_INCASSO, 'Contanti');
     const data = h('input', { type: 'date', value: isoLocale(new Date()), 'aria-label': 'Data' });
+    // Gomme/mousse: chiedere SEMPRE la cassa (regola di Luca 14/11). Con gomme della fattura PR la scelta e' obbligatoria.
+    const gommePR = round2(righe.filter((r) => r.pr).reduce((t, r) => t + Number(r.quantita) * Number(r.prezzo_unit), 0));
+    const cassaSel = h('select', { 'aria-label': 'Cassa gomme/mousse' },
+      gommePR > 0 ? h('option', { value: '', text: 'Scegli…' }) : null,
+      h('option', { value: 'officina', text: 'Tutto in cassa officina' }),
+      h('option', { value: 'gomme_PR', text: 'Parte a cassa gomme PR 3777/1' }));
+    const impG = ninp(gommePR > 0 ? gommePR : ''); impG.setAttribute('aria-label', 'Gomme PR €');
+    const impGF = campo('Di cui gomme PR €', impG);
+    impGF.hidden = true;
+    cassaSel.addEventListener('change', () => { impGF.hidden = cassaSel.value !== 'gomme_PR'; });
     let invio = false;
     const go = async () => {
       if (invio) return;
@@ -1366,12 +1479,22 @@ async function pagScheda(id) {
       if (!(v > 0)) { toast('Importo non valido', true); return; }
       if (v > residuo + 0.001) { toast('Importo superiore al residuo', true); return; }
       if (!data.value) { toast('Data mancante', true); return; }
+      if (!cassaSel.value) { toast('Scegli la cassa delle gomme', true); return; }
+      let g = 0;
+      if (cassaSel.value === 'gomme_PR') {
+        g = parseNum(impG.value);
+        if (!(g > 0) || g > v + 0.001) { toast('Importo gomme non valido', true); return; }
+      }
       invio = true;
-      const okk = await run(async () => { await api.incassa(s.id, met.value, data.value, round2(v)); return true; });
+      const okk = await run(async () => {
+        await api.incassa(s.id, met.value, data.value, round2(v));
+        if (g > 0) await api.gommeAParte(s.id, round2(g), data.value);
+        return true;
+      });
       invio = false;
       if (okk) { sh.close(); toast('Incassato'); route(true); }
     };
-    sh.set(campo('Importo €', imp), campo('Metodo', met), campo('Data', data));
+    sh.set(campo('Importo €', imp), campo('Metodo', met), campo('Data', data), campo('Gomme/mousse', cassaSel), impGF);
     sh.foot(btn('Conferma', 'check', 'full', go));
     setTimeout(() => imp.select(), 250);
   };
@@ -1386,6 +1509,10 @@ async function pagScheda(id) {
     Number(s.incassato) > 0 || incassabile ? h('div', { class: 'card' },
       Number(s.incassato) > 0 ? h('div', { class: 'row' }, h('span', { text: 'Incassato ' + fmtEur(s.incassato) }), h('span', { text: 'Residuo ' + fmtEur(residuo) })) : null,
       incassabile ? btn('Incassa', 'cash', 'full', incassa) : null) : null,
+    d.margine ? h('div', { class: 'card' },
+      h('div', { class: 'row' }, h('span', { class: 'muted', text: 'Margine' }),
+        h('span', { class: 'pz', text: fmtEur(round2(Number(d.margine.prezzo_finale) - Number(d.margine.gomme_a_parte) - Number(d.margine.costo_materiali))) })),
+      h('div', { class: 'spiega', text: 'Prezzo ' + fmtEur(d.margine.prezzo_finale) + (Number(d.margine.gomme_a_parte) ? ' - gomme PR ' + fmtEur(d.margine.gomme_a_parte) : '') + ' - materiali ' + fmtEur(round2(d.margine.costo_materiali)) + ' (senza IVA)' })) : null,
     h('div', { class: 'card' },
       campo('Descrizione', descr), campo('Moto', moto),
       h('div', { class: 'two' }, campo('Ore', ore), campo('Tariffa €/h', tar)),
@@ -1514,8 +1641,9 @@ async function route(mantieni) {
   const my = ++tok;
   guardia = null;
   const parti = (location.hash || '#riepilogo').slice(1).split('/');
-  const pag = VOCI.some((v) => v[0] === parti[0]) || parti[0] === 'movimenti' || parti[0] === 'fatture' || parti[0] === 'andamento' ? parti[0] : 'riepilogo';
-  const navOn = pag === 'movimenti' || pag === 'fatture' || pag === 'andamento' ? 'contabilita' : pag;
+  const EXTRA = ['movimenti', 'fatture', 'andamento', 'guadagno'];
+  const pag = VOCI.some((v) => v[0] === parti[0]) || EXTRA.indexOf(parti[0]) >= 0 ? parti[0] : 'riepilogo';
+  const navOn = EXTRA.indexOf(pag) >= 0 ? 'contabilita' : pag;
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.p === navOn));
   const m = main();
   const y = m.scrollTop;
@@ -1529,6 +1657,7 @@ async function route(mantieni) {
     else if (pag === 'personale') nodo = await pagPersonale();
     else if (pag === 'fatture') nodo = parti[1] && /^\d+$/.test(parti[1]) ? await pagFattura(Number(parti[1])) : await pagFatture();
     else if (pag === 'andamento') nodo = await pagAndamento();
+    else if (pag === 'guadagno') nodo = await pagGuadagno();
     else if (pag === 'movimenti') nodo = await pagMovimenti(parti[1]);
     else nodo = await pagMagazzino();
     if (my !== tok) return;
